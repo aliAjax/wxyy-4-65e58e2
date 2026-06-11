@@ -6,14 +6,83 @@ const instruments = [
   { name: "小锣", token: "台", freq: 520 }
 ];
 const steps = 16;
-const state = JSON.parse(localStorage.getItem(storageKey) || "null") || {
+
+const templates = [
+  {
+    id: "entrance",
+    name: "出场",
+    scene: "角色登场，慢速庄重",
+    bpm: 72,
+    pattern: [
+      "仓---仓---仓---仓---",
+      "冬-冬-冬-冬-冬-冬-冬-冬-",
+      "------才-------才-",
+      "--台---台---台---台-"
+    ]
+  },
+  {
+    id: "reveal",
+    name: "亮相",
+    scene: "角色亮相，节奏顿挫",
+    bpm: 88,
+    pattern: [
+      "仓-------仓---仓---",
+      "冬冬--冬---冬冬--冬---",
+      "---------才-----才",
+      "----台----------台"
+    ]
+  },
+  {
+    id: "transition",
+    name: "转场",
+    scene: "场景转换，紧凑流畅",
+    bpm: 120,
+    pattern: [
+      "--仓---仓---仓---仓-",
+      "冬-冬-冬-冬-冬-冬-冬冬冬冬",
+      "才---才---才---才--才",
+      "-台-台-台-台-台-台-台--"
+    ]
+  },
+  {
+    id: "finale",
+    name: "收尾",
+    scene: "段落收束，渐缓收势",
+    bpm: 64,
+    pattern: [
+      "仓-------仓---仓---",
+      "冬---冬---------冬-",
+      "--------------才-",
+      "--台------台---台--"
+    ]
+  }
+];
+
+function expandTemplateRow(short) {
+  const row = [];
+  for (const ch of short) {
+    if (ch === "-") row.push("");
+    else row.push(ch);
+  }
+  return row;
+}
+
+function getTemplatePattern(template) {
+  return template.pattern.map(expandTemplateRow);
+}
+
+const defaultState = {
   pieceName: "出场锣鼓-慢起",
   bpm: 96,
   loop: "",
   notes: [],
   pattern: instruments.map((instrument) => Array.from({ length: steps }, (_, index) => index % 4 === 0 ? instrument.token : "")),
+  enabledInstruments: [true, true, true, true],
   saved: []
 };
+
+const storedState = JSON.parse(localStorage.getItem(storageKey) || "null");
+const state = storedState ? { ...defaultState, ...storedState, enabledInstruments: storedState.enabledInstruments || defaultState.enabledInstruments } : defaultState;
 
 let timer = null;
 let playhead = 0;
@@ -27,6 +96,8 @@ const pieceName = document.querySelector("#pieceName");
 const bpmInput = document.querySelector("#bpmInput");
 const loopSelect = document.querySelector("#loopSelect");
 const noteInput = document.querySelector("#noteInput");
+const templateList = document.querySelector("#templateList");
+const voicePanel = document.querySelector("#voicePanel");
 
 function save() {
   localStorage.setItem(storageKey, JSON.stringify(state));
@@ -51,15 +122,40 @@ function renderGrid() {
   }
 
   const rows = instruments.flatMap((instrument, rowIndex) => {
-    const row = [`<div class="label-cell">${instrument.name}</div>`];
+    const muted = !state.enabledInstruments[rowIndex];
+    const row = [`<div class="label-cell ${muted ? "muted" : ""}">${instrument.name}</div>`];
     for (let step = 0; step < steps; step += 1) {
       const value = state.pattern[rowIndex][step];
-      row.push(`<button class="cell ${value ? "filled" : ""}" type="button" data-row="${rowIndex}" data-step="${step}">${value}</button>`);
+      row.push(`<button class="cell ${value ? "filled" : ""} ${muted ? "muted" : ""}" type="button" data-row="${rowIndex}" data-step="${step}">${value}</button>`);
     }
     return row;
   });
 
   grid.innerHTML = [...header, ...rows].join("");
+}
+
+function renderVoicePanel() {
+  const allEnabled = state.enabledInstruments.every(Boolean);
+  const voiceToggles = instruments.map((instrument, index) => {
+    const enabled = state.enabledInstruments[index];
+    return `
+      <label class="voice-toggle ${enabled ? "on" : "off"}">
+        <input type="checkbox" data-voice="${index}" ${enabled ? "checked" : ""}>
+        <span class="voice-indicator"></span>
+        <span class="voice-name">${instrument.name}</span>
+        <span class="voice-token">${instrument.token}</span>
+      </label>
+    `;
+  }).join("");
+  voicePanel.innerHTML = `
+    <div class="voice-header">
+      <h2>分声部练习</h2>
+      <button type="button" class="voice-all-btn" data-voice-all="${allEnabled ? "off" : "on"}">
+        ${allEnabled ? "全部静音" : "全部启用"}
+      </button>
+    </div>
+    <div class="voice-list">${voiceToggles}</div>
+  `;
 }
 
 function renderSidebars() {
@@ -83,10 +179,36 @@ function renderSidebars() {
   `).join("") : "<p>还没有保存方案。</p>";
 }
 
+function renderTemplates() {
+  templateList.innerHTML = templates.map((tpl) => {
+    const expandedPattern = getTemplatePattern(tpl);
+    const tokenCount = expandedPattern.flat().filter(Boolean).length;
+    const previewRows = instruments.map((inst, rowIdx) => {
+      const cells = expandedPattern[rowIdx].map((val, stepIdx) =>
+        `<span class="tpl-cell ${val ? "filled" : ""}">${val || ""}</span>`
+      ).join("");
+      return `<div class="tpl-row"><span class="tpl-label">${inst.name}</span>${cells}</div>`;
+    }).join("");
+    return `
+      <div class="tpl-card" data-template="${tpl.id}">
+        <div class="tpl-header">
+          <strong class="tpl-name">${tpl.name}</strong>
+          <span class="tpl-bpm">${tpl.bpm} BPM</span>
+        </div>
+        <p class="tpl-scene">${tpl.scene}</p>
+        <div class="tpl-preview">${previewRows}</div>
+        <div class="tpl-footer">${tokenCount}个口令 · 点击载入排练</div>
+      </div>
+    `;
+  }).join("");
+}
+
 function render() {
   syncFields();
   renderGrid();
+  renderVoicePanel();
   renderSidebars();
+  renderTemplates();
 }
 
 function playSound(instrument) {
@@ -118,7 +240,9 @@ function tick() {
   if (playhead < start || playhead > end) playhead = start;
   highlight(playhead);
   instruments.forEach((instrument, rowIndex) => {
-    if (state.pattern[rowIndex][playhead]) playSound(instrument);
+    if (state.enabledInstruments[rowIndex] && state.pattern[rowIndex][playhead]) {
+      playSound(instrument);
+    }
   });
   playhead = playhead >= end ? start : playhead + 1;
 }
@@ -182,6 +306,7 @@ document.querySelector("#saveBtn").addEventListener("click", () => {
     loop: state.loop,
     notes: [...state.notes],
     pattern: state.pattern.map((row) => [...row]),
+    enabledInstruments: [...state.enabledInstruments],
     createdAt: new Date().toISOString()
   });
   save();
@@ -197,6 +322,37 @@ savedList.addEventListener("click", (event) => {
   state.loop = item.loop;
   state.notes = [...item.notes];
   state.pattern = item.pattern.map((row) => [...row]);
+  state.enabledInstruments = item.enabledInstruments ? [...item.enabledInstruments] : [true, true, true, true];
+  save();
+  render();
+});
+
+templateList.addEventListener("click", (event) => {
+  const tplId = event.target.closest("[data-template]")?.dataset.template;
+  const tpl = templates.find((t) => t.id === tplId);
+  if (!tpl) return;
+  state.pieceName = tpl.name;
+  state.bpm = tpl.bpm;
+  state.loop = "";
+  state.pattern = getTemplatePattern(tpl);
+  state.enabledInstruments = [true, true, true, true];
+  save();
+  render();
+});
+
+voicePanel.addEventListener("change", (event) => {
+  const voiceIndex = event.target.closest("[data-voice]")?.dataset.voice;
+  if (voiceIndex === undefined) return;
+  state.enabledInstruments[Number(voiceIndex)] = event.target.checked;
+  save();
+  render();
+});
+
+voicePanel.addEventListener("click", (event) => {
+  const allBtn = event.target.closest("[data-voice-all]");
+  if (!allBtn) return;
+  const action = allBtn.dataset.voiceAll;
+  state.enabledInstruments = state.enabledInstruments.map(() => action === "on");
   save();
   render();
 });

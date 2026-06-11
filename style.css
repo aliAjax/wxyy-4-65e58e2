@@ -217,9 +217,250 @@ select {
   font-size: 14px;
 }
 
+.template-library {
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 16px;
+}
+
+.template-library h2 {
+  margin-bottom: 14px;
+}
+
+.template-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.tpl-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 14px;
+  cursor: pointer;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+
+.tpl-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 16px rgb(179 37 46 / 12%);
+}
+
+.tpl-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.tpl-name {
+  font-size: 18px;
+  color: var(--ink);
+}
+
+.tpl-bpm {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--gold);
+  background: #fdf4e4;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.tpl-scene {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.tpl-preview {
+  background: #f9f5ee;
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 10px;
+}
+
+.tpl-row {
+  display: grid;
+  grid-template-columns: 36px repeat(16, 1fr);
+  gap: 2px;
+  margin-bottom: 2px;
+}
+
+.tpl-row:last-child {
+  margin-bottom: 0;
+}
+
+.tpl-label {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tpl-cell {
+  aspect-ratio: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  font-size: 9px;
+  font-weight: 900;
+  color: var(--accent);
+  background: transparent;
+}
+
+.tpl-cell.filled {
+  background: #fff1d1;
+}
+
+.tpl-footer {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.voice-controls {
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 16px;
+}
+
+.voice-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.voice-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.voice-all-btn {
+  min-height: 34px;
+  background: var(--muted);
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+.voice-all-btn:hover {
+  background: var(--ink);
+}
+
+.voice-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.voice-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: var(--ink);
+}
+
+.voice-toggle.on {
+  border-color: var(--active);
+  background: #f0f8f6;
+}
+
+.voice-toggle.off {
+  opacity: 0.55;
+  background: #f9f6f1;
+}
+
+.voice-toggle input {
+  display: none;
+}
+
+.voice-indicator {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+
+.voice-toggle.on .voice-indicator {
+  background: var(--active);
+  border-color: var(--active);
+  box-shadow: 0 0 0 3px #d9efea;
+}
+
+.voice-toggle.off .voice-indicator {
+  background: #e8e1d5;
+}
+
+.voice-name {
+  font-weight: 700;
+  font-size: 15px;
+  flex: 1;
+}
+
+.voice-token {
+  font-size: 18px;
+  font-weight: 900;
+  color: var(--accent);
+  background: #fff1d1;
+  padding: 2px 8px;
+  border-radius: 4px;
+  min-width: 28px;
+  text-align: center;
+}
+
+.voice-toggle.off .voice-token {
+  opacity: 0.4;
+}
+
+.label-cell.muted {
+  background: #e0d9cc;
+  color: #9a948a;
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
+
+.cell.muted {
+  background: #f7f4ee;
+  opacity: 0.45;
+}
+
+.cell.muted.filled {
+  background: #f0eadd;
+  color: #a88f6b;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.cell.muted.playing {
+  outline-color: #8aa09d;
+  background: #e2ebe9;
+}
+
 @media (max-width: 1160px) {
   .stage,
   .controls {
+    grid-template-columns: 1fr;
+  }
+
+  .template-list {
     grid-template-columns: 1fr;
   }
 }
