@@ -7,70 +7,6 @@ const instruments = [
 ];
 const steps = 16;
 
-const templates = [
-  {
-    id: "entrance",
-    name: "出场",
-    scene: "角色登场，慢速庄重",
-    bpm: 72,
-    pattern: [
-      "仓---仓---仓---仓---",
-      "冬-冬-冬-冬-冬-冬-冬-冬-",
-      "------才-------才-",
-      "--台---台---台---台-"
-    ]
-  },
-  {
-    id: "reveal",
-    name: "亮相",
-    scene: "角色亮相，节奏顿挫",
-    bpm: 88,
-    pattern: [
-      "仓-------仓---仓---",
-      "冬冬--冬---冬冬--冬---",
-      "---------才-----才",
-      "----台----------台"
-    ]
-  },
-  {
-    id: "transition",
-    name: "转场",
-    scene: "场景转换，紧凑流畅",
-    bpm: 120,
-    pattern: [
-      "--仓---仓---仓---仓-",
-      "冬-冬-冬-冬-冬-冬-冬冬冬冬",
-      "才---才---才---才--才",
-      "-台-台-台-台-台-台-台--"
-    ]
-  },
-  {
-    id: "finale",
-    name: "收尾",
-    scene: "段落收束，渐缓收势",
-    bpm: 64,
-    pattern: [
-      "仓-------仓---仓---",
-      "冬---冬---------冬-",
-      "--------------才-",
-      "--台------台---台--"
-    ]
-  }
-];
-
-function expandTemplateRow(short) {
-  const row = [];
-  for (const ch of short) {
-    if (ch === "-") row.push("");
-    else row.push(ch);
-  }
-  return row;
-}
-
-function getTemplatePattern(template) {
-  return template.pattern.map(expandTemplateRow);
-}
-
 const defaultState = {
   pieceName: "出场锣鼓-慢起",
   bpm: 96,
@@ -96,7 +32,6 @@ const pieceName = document.querySelector("#pieceName");
 const bpmInput = document.querySelector("#bpmInput");
 const loopSelect = document.querySelector("#loopSelect");
 const noteInput = document.querySelector("#noteInput");
-const templateList = document.querySelector("#templateList");
 const voicePanel = document.querySelector("#voicePanel");
 
 function save() {
@@ -179,36 +114,11 @@ function renderSidebars() {
   `).join("") : "<p>还没有保存方案。</p>";
 }
 
-function renderTemplates() {
-  templateList.innerHTML = templates.map((tpl) => {
-    const expandedPattern = getTemplatePattern(tpl);
-    const tokenCount = expandedPattern.flat().filter(Boolean).length;
-    const previewRows = instruments.map((inst, rowIdx) => {
-      const cells = expandedPattern[rowIdx].map((val, stepIdx) =>
-        `<span class="tpl-cell ${val ? "filled" : ""}">${val || ""}</span>`
-      ).join("");
-      return `<div class="tpl-row"><span class="tpl-label">${inst.name}</span>${cells}</div>`;
-    }).join("");
-    return `
-      <div class="tpl-card" data-template="${tpl.id}">
-        <div class="tpl-header">
-          <strong class="tpl-name">${tpl.name}</strong>
-          <span class="tpl-bpm">${tpl.bpm} BPM</span>
-        </div>
-        <p class="tpl-scene">${tpl.scene}</p>
-        <div class="tpl-preview">${previewRows}</div>
-        <div class="tpl-footer">${tokenCount}个口令 · 点击载入排练</div>
-      </div>
-    `;
-  }).join("");
-}
-
 function render() {
   syncFields();
   renderGrid();
   renderVoicePanel();
   renderSidebars();
-  renderTemplates();
 }
 
 function playSound(instrument) {
@@ -323,19 +233,6 @@ savedList.addEventListener("click", (event) => {
   state.notes = [...item.notes];
   state.pattern = item.pattern.map((row) => [...row]);
   state.enabledInstruments = item.enabledInstruments ? [...item.enabledInstruments] : [true, true, true, true];
-  save();
-  render();
-});
-
-templateList.addEventListener("click", (event) => {
-  const tplId = event.target.closest("[data-template]")?.dataset.template;
-  const tpl = templates.find((t) => t.id === tplId);
-  if (!tpl) return;
-  state.pieceName = tpl.name;
-  state.bpm = tpl.bpm;
-  state.loop = "";
-  state.pattern = getTemplatePattern(tpl);
-  state.enabledInstruments = [true, true, true, true];
   save();
   render();
 });
