@@ -37,6 +37,45 @@
 
     <section class="voice-controls" id="voicePanel"></section>
 
+    <section class="dashboard" id="dashboard">
+      <div class="dashboard-header">
+        <h2>排练进度看板</h2>
+        <span class="dashboard-time" id="dashboardTime"></span>
+      </div>
+      <div class="dashboard-grid">
+        <div class="dashboard-card completion-card">
+          <div class="card-label">谱面完成度</div>
+          <div class="card-progress">
+            <div class="progress-bar"><div class="progress-fill" id="completionBar"></div></div>
+            <div class="progress-text"><span id="completionPercent">0%</span> <small id="completionDetail"></small></div>
+          </div>
+        </div>
+        <div class="dashboard-card stats-card">
+          <div class="stat-item">
+            <div class="stat-num" id="difficultyCount">0</div>
+            <div class="stat-label">难点批注</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-num" id="savedCount">0</div>
+            <div class="stat-label">已存方案</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-num" id="playCount">0</div>
+            <div class="stat-label">累计播放</div>
+          </div>
+        </div>
+        <div class="dashboard-card focus-card">
+          <div class="card-label">重点小节</div>
+          <div class="focus-list" id="focusList"></div>
+        </div>
+        <div class="dashboard-card suggest-card">
+          <div class="card-label">下次练习建议</div>
+          <div class="suggest-list" id="suggestList"></div>
+          <div class="last-play" id="lastPlay"></div>
+        </div>
+      </div>
+    </section>
+
     <section class="stage">
       <aside class="segments">
         <h2>已存方案</h2>
