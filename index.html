@@ -16,12 +16,13 @@
       <div class="transport">
         <button id="playBtn" type="button">播放</button>
         <button id="stopBtn" type="button">停止</button>
+        <button id="continuousPlayBtn" type="button" class="secondary-btn">连续播放</button>
         <button id="saveBtn" type="button">保存方案</button>
       </div>
     </header>
 
     <section class="controls">
-      <label>剧目片段<input id="pieceName" placeholder="如：出场锣鼓-慢起"></label>
+      <label>段落名称<input id="pieceName" placeholder="如：出场锣鼓-慢起"></label>
       <label>速度BPM<input id="bpmInput" type="number" min="40" max="220" value="96"></label>
       <label>循环小节
         <select id="loopSelect">
@@ -33,6 +34,84 @@
         </select>
       </label>
       <label>难点批注<input id="noteInput" placeholder="如：第2小节小锣晚半拍"></label>
+    </section>
+
+    <section class="section-manager" id="sectionManager">
+      <div class="section-header">
+        <h2>排练段落编排</h2>
+        <div class="section-actions">
+          <button type="button" id="addSectionBtn" class="section-action-btn" title="新增段落">+ 新增</button>
+          <button type="button" id="duplicateSectionBtn" class="section-action-btn" title="复制当前段落">⧉ 复制</button>
+          <button type="button" id="deleteSectionBtn" class="section-action-btn danger" title="删除当前段落">🗑 删除</button>
+        </div>
+      </div>
+      <div class="section-list" id="sectionList"></div>
+    </section>
+
+    <section class="command-import" id="commandImport">
+      <div class="import-header">
+        <h2>口令输入转网格</h2>
+        <p class="import-hint">
+          用空格或竖线 <code>|</code> 分隔拍点，小节间用双竖线 <code>||</code> 分隔。
+          口令字：<span class="token-hint"><span class="token-tag token-cang">仓</span>=大锣</span>
+          <span class="token-hint"><span class="token-tag token-dong">冬</span>=鼓</span>
+          <span class="token-hint"><span class="token-tag token-cai">才</span>=钹</span>
+          <span class="token-hint"><span class="token-tag token-tai">台</span>=小锣</span>
+          ，休止用 <code>0</code>、<code>乙</code>、<code>×</code> 或留空。
+          <button type="button" class="toggle-ref-btn" id="toggleRefBtn">查看完整对照表 ▾</button>
+        </p>
+        <div class="token-ref-panel" id="tokenRefPanel">
+          <div class="token-ref-group">
+            <span class="token-ref-label">大锣</span>
+            <span class="token-tag token-cang">仓</span>
+            <span class="token-alias">匡</span>
+            <span class="token-alias">哐</span>
+            <span class="token-alias">铛</span>
+          </div>
+          <div class="token-ref-group">
+            <span class="token-ref-label">鼓</span>
+            <span class="token-tag token-dong">冬</span>
+            <span class="token-alias">咚</span>
+            <span class="token-alias">大</span>
+          </div>
+          <div class="token-ref-group">
+            <span class="token-ref-label">钹</span>
+            <span class="token-tag token-cai">才</span>
+            <span class="token-alias">七</span>
+            <span class="token-alias">呛</span>
+            <span class="token-alias">镲</span>
+          </div>
+          <div class="token-ref-group">
+            <span class="token-ref-label">小锣</span>
+            <span class="token-tag token-tai">台</span>
+            <span class="token-alias">令</span>
+            <span class="token-alias">另</span>
+            <span class="token-alias">当</span>
+            <span class="token-alias">来</span>
+          </div>
+          <div class="token-ref-group token-ref-rest">
+            <span class="token-ref-label">休止</span>
+            <code>0</code> <code>乙</code> <code>×</code> <code>·</code> <code>冷</code> <code>一</code> <code>空</code>
+          </div>
+        </div>
+      </div>
+      <div class="import-body">
+        <textarea id="commandInput" placeholder="例如：仓 才 仓 才 || 冬 冬 台 台 || 匡令 呛台 仓 冬 || 乙 才 0 才&#10;支持别名：匡→仓、咚→冬、七→才、令→台 等，一拍多字连写如「匡令」表示同时击打"></textarea>
+        <div class="import-actions">
+          <button type="button" id="parseBtn" class="parse-btn">🔍 解析预览</button>
+          <button type="button" id="confirmBtn" class="confirm-btn" disabled>✓ 确认写入网格</button>
+          <button type="button" id="cancelBtn" class="cancel-btn" disabled>✕ 取消</button>
+        </div>
+        <div class="import-summary" id="importSummary" style="display: none;"></div>
+      </div>
+      <div class="import-error" id="importError" style="display: none;"></div>
+      <div class="import-preview" id="importPreview" style="display: none;">
+        <div class="preview-header">
+          <h3>解析预览</h3>
+          <span class="preview-note">⚠️ 确认后写入，<strong>不会覆盖</strong>现有谱面已有内容，仅填入空格</span>
+        </div>
+        <div class="preview-grid" id="previewGrid"></div>
+      </div>
     </section>
 
     <section class="voice-controls" id="voicePanel"></section>
@@ -82,6 +161,18 @@
         <div id="savedList"></div>
       </aside>
       <section class="score">
+        <div class="score-header">
+          <div class="current-section-info">
+            <span class="current-section-label">当前段落：</span>
+            <span class="current-section-name" id="currentSectionName">段落 1</span>
+            <span class="current-section-bpm" id="currentSectionBPM">96 BPM</span>
+          </div>
+          <div class="section-nav">
+            <button type="button" id="prevSectionBtn" class="nav-btn" title="上一段">◀</button>
+            <span class="section-indicator" id="sectionIndicator">1 / 1</span>
+            <button type="button" id="nextSectionBtn" class="nav-btn" title="下一段">▶</button>
+          </div>
+        </div>
         <div id="grid" class="grid"></div>
       </section>
       <aside class="notes">
