@@ -230,6 +230,7 @@ let currentPlaySectionIndex = 0;
 let continuousPlaySectionCount = 0;
 let currentRehearsalId = null;
 let currentRehearsalStartTime = null;
+let pendingRehearsalResume = null;
 
 const grid = document.querySelector("#grid");
 const savedList = document.querySelector("#savedList");
@@ -932,6 +933,12 @@ function getPlaySection() {
   return getCurrentSection();
 }
 
+function getValidPlayhead(section, position) {
+  if (typeof position !== "number") return null;
+  const [start, end] = currentRange(section);
+  return position >= start && position <= end ? position : null;
+}
+
 function tick() {
   const section = getPlaySection();
   if (!section) return;
@@ -986,17 +993,24 @@ function tick() {
 function startPlayback() {
   if (timer) clearInterval(timer);
 
-  const section = getPlaySection();
+  let section = getPlaySection();
   if (!section) return;
+  const resume = pendingRehearsalResume;
 
   if (state.continuousPlay) {
-    currentPlaySectionIndex = 0;
+    const resumeIndex = resume ? state.sections.findIndex((s) => s.id === resume.sectionId) : -1;
+    currentPlaySectionIndex = resumeIndex >= 0 ? resumeIndex : 0;
     continuousPlaySectionCount = 0;
-    state.currentSectionId = state.sections[0].id;
+    state.currentSectionId = state.sections[currentPlaySectionIndex].id;
+    section = getPlaySection();
     renderSectionsList();
   }
 
-  playhead = currentRange(section)[0];
+  const resumedPlayhead = resume && resume.sectionId === section.id
+    ? getValidPlayhead(section, resume.playhead)
+    : null;
+  playhead = resumedPlayhead ?? currentRange(section)[0];
+  pendingRehearsalResume = null;
   state.playCount = (state.playCount || 0) + 1;
   state.lastPlayedAt = new Date().toISOString();
 
@@ -1390,11 +1404,17 @@ rehearsalTimelineBody.addEventListener("click", (event) => {
       const [rangeStart] = currentRange(targetSection);
       if (entry.pausePosition != null && entry.sectionId === targetSection.id) {
         playhead = entry.pausePosition;
+        pendingRehearsalResume = {
+          sectionId: targetSection.id,
+          playhead: entry.pausePosition
+        };
       } else {
         playhead = rangeStart;
+        pendingRehearsalResume = null;
       }
     } else {
       playhead = 0;
+      pendingRehearsalResume = null;
     }
     save();
     render();
