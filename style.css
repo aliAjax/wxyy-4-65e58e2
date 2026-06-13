@@ -2720,3 +2720,501 @@ select {
     text-align: center;
   }
 }
+
+.collab-notes {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
+}
+
+.collab-notes-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.collab-notes-header h2 {
+  margin: 0;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.collab-notes-input {
+  margin-bottom: 14px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.collab-input-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.collab-input-row:last-child {
+  margin-bottom: 0;
+}
+
+.collab-input-main {
+  gap: 6px;
+}
+
+.collab-type-selector {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+}
+
+.collab-type-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.collab-type-btn input {
+  display: none;
+}
+
+.collab-type-btn.teacher-type.active {
+  border-color: var(--accent);
+  background: #fff1f0;
+  color: var(--accent);
+}
+
+.collab-type-btn.student-type.active {
+  border-color: var(--active);
+  background: #f0f8f6;
+  color: var(--active);
+}
+
+.collab-type-btn:hover {
+  transform: translateY(-1px);
+}
+
+.collab-target-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.collab-target-selector select {
+  width: auto;
+  min-width: 90px;
+  padding: 6px 8px;
+  font-size: 12px;
+  height: 32px;
+}
+
+.collab-input {
+  flex: 1;
+  min-height: 36px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.collab-add-btn {
+  min-height: 36px;
+  padding: 0 16px;
+  background: linear-gradient(135deg, var(--accent), var(--gold));
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.collab-add-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(179, 37, 46, 0.3);
+}
+
+.collab-notes-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: #f9f6f1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.filter-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.filter-buttons {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.filter-btn {
+  min-height: 26px;
+  padding: 4px 10px;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.filter-btn:hover {
+  border-color: var(--active);
+  color: var(--active);
+}
+
+.filter-btn.active {
+  background: var(--active);
+  border-color: var(--active);
+  color: white;
+}
+
+.filter-btn.teacher-filter.active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.filter-btn.student-filter.active {
+  background: var(--active);
+  border-color: var(--active);
+}
+
+.collab-notes-stats {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.stat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  background: white;
+  border: 1px solid var(--line);
+}
+
+.teacher-stat {
+  background: #fff1f0;
+  border-color: #f1c0bd;
+  color: var(--accent);
+}
+
+.student-stat {
+  background: #f0f8f6;
+  border-color: #c9e2de;
+  color: var(--active);
+}
+
+.pending-stat {
+  background: #fef3c7;
+  border-color: #fde68a;
+  color: #92400e;
+}
+
+.resolved-stat {
+  background: #d1fae5;
+  border-color: #6ee7b7;
+  color: #047857;
+}
+
+.collab-notes-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.collab-note {
+  position: relative;
+  padding: 12px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: white;
+  border: 2px solid var(--line);
+  transition: all 0.2s;
+}
+
+.collab-note.teacher-note {
+  border-left: 4px solid var(--accent);
+  background: linear-gradient(135deg, #fff 0%, #fff5f5 100%);
+}
+
+.collab-note.student-note {
+  border-left: 4px solid var(--active);
+  background: linear-gradient(135deg, #fff 0%, #f0f8f6 100%);
+}
+
+.collab-note.resolved {
+  opacity: 0.6;
+}
+
+.collab-note.resolved .collab-note-content {
+  text-decoration: line-through;
+}
+
+.collab-note-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 6px;
+  gap: 8px;
+}
+
+.collab-note-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.collab-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.collab-tag.type-teacher {
+  background: var(--accent);
+  color: white;
+}
+
+.collab-tag.type-student {
+  background: var(--active);
+  color: white;
+}
+
+.collab-tag.target-all {
+  background: var(--gold);
+  color: white;
+}
+
+.collab-tag.target-measure {
+  background: #1d4ed8;
+  color: white;
+}
+
+.collab-tag.status-resolved {
+  background: #047857;
+  color: white;
+}
+
+.collab-tag.status-pending {
+  background: #b45309;
+  color: white;
+}
+
+.collab-note-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.collab-action-btn {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: white;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: all 0.2s;
+}
+
+.collab-action-btn:hover {
+  transform: translateY(-1px);
+}
+
+.collab-action-btn.resolve-btn:hover {
+  background: var(--active);
+  border-color: var(--active);
+  color: white;
+}
+
+.collab-action-btn.unresolve-btn {
+  background: #d1fae5;
+  border-color: #6ee7b7;
+  color: #047857;
+}
+
+.collab-action-btn.unresolve-btn:hover {
+  background: var(--active);
+  border-color: var(--active);
+  color: white;
+}
+
+.collab-action-btn.delete-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.collab-note-content {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+
+.collab-note-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.collab-note-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.cell.has-notes {
+  position: relative;
+}
+
+.cell.has-notes::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(179, 37, 46, 0.2);
+  animation: notePulse 2s ease-in-out infinite;
+}
+
+.cell.has-teacher-notes::before {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(179, 37, 46, 0.2);
+}
+
+.cell.has-student-notes::before {
+  background: var(--active);
+  box-shadow: 0 0 0 2px rgba(27, 106, 104, 0.2);
+}
+
+.cell.has-both-notes::before {
+  background: linear-gradient(135deg, var(--accent) 50%, var(--active) 50%);
+  box-shadow: 0 0 0 2px rgba(197, 148, 39, 0.2);
+}
+
+@keyframes notePulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.2); opacity: 0.8; }
+}
+
+.beat-cell.has-notes {
+  position: relative;
+}
+
+.beat-cell.has-notes::after {
+  content: "📝";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  font-size: 10px;
+}
+
+.empty-collab-notes {
+  text-align: center;
+  padding: 24px 16px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.empty-collab-notes::before {
+  content: "💬";
+  display: block;
+  font-size: 28px;
+  margin-bottom: 8px;
+  opacity: 0.6;
+}
+
+@media (max-width: 1160px) {
+  .collab-type-selector {
+    flex-direction: column;
+  }
+
+  .collab-target-selector {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .collab-target-selector select {
+    flex: 1;
+  }
+}
+
+@media (max-width: 640px) {
+  .collab-input-main {
+    flex-direction: column;
+  }
+
+  .collab-add-btn {
+    width: 100%;
+  }
+
+  .collab-notes-filters {
+    flex-direction: column;
+  }
+
+  .filter-group {
+    width: 100%;
+  }
+
+  .filter-buttons {
+    flex: 1;
+    justify-content: flex-start;
+  }
+}

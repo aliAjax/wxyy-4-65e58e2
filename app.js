@@ -9,6 +9,12 @@ const instruments = [
 ];
 const steps = 16;
 
+const collabFilters = {
+  type: "all",
+  status: "all",
+  sort: "newest"
+};
+
 function deepCloneSection(section) {
   if (!section) return null;
   return {
@@ -17,6 +23,9 @@ function deepCloneSection(section) {
     bpm: section.bpm,
     loop: section.loop,
     notes: Array.isArray(section.notes) ? [...section.notes] : [],
+    collabNotes: Array.isArray(section.collabNotes)
+      ? section.collabNotes.map(n => ({ ...n }))
+      : [],
     pattern: Array.isArray(section.pattern)
       ? section.pattern.map((row) => (Array.isArray(row) ? [...row] : []))
       : instruments.map(() => Array(steps).fill("")),
@@ -65,6 +74,7 @@ function createDefaultSection(name = "段落 1") {
     bpm: 96,
     loop: "",
     notes: [],
+    collabNotes: [],
     pattern: instruments.map((instrument) =>
       Array.from({ length: steps }, (_, index) =>
         index % 4 === 0 ? instrument.token : ""
@@ -85,9 +95,73 @@ const defaultState = {
   recentPlayedSection: ""
 };
 
+function parseMeasureFromNote(content) {
+  const match = content.match(/第\s*([一二三四\d]+)\s*小节/);
+  if (!match) return null;
+  const numStr = match[1];
+  if (["一", "二", "三", "四"].includes(numStr)) {
+    return ["一", "二", "三", "四"].indexOf(numStr);
+  }
+  const num = parseInt(numStr);
+  if (!isNaN(num) && num >= 1 && num <= 4) {
+    return num - 1;
+  }
+  return null;
+}
+
+function migrateNotesToCollabNotes(section) {
+  if (!section) return;
+  if (!Array.isArray(section.notes) || section.notes.length === 0) {
+    if (!Array.isArray(section.collabNotes)) {
+      section.collabNotes = [];
+    }
+    return;
+  }
+  if (!Array.isArray(section.collabNotes)) {
+    section.collabNotes = [];
+  }
+  const existingContents = new Set(section.collabNotes.map(n => n.content));
+  const now = new Date().toISOString();
+  section.notes.forEach((noteContent, index) => {
+    if (!noteContent || typeof noteContent !== "string") return;
+    if (existingContents.has(noteContent)) return;
+    const measure = parseMeasureFromNote(noteContent);
+    section.collabNotes.push({
+      id: crypto.randomUUID(),
+      type: "teacher",
+      content: noteContent,
+      target: measure !== null ? measure : "all",
+      resolved: false,
+      createdAt: now,
+      updatedAt: now,
+      _migrated: true
+    });
+    existingContents.add(noteContent);
+  });
+}
+
+function migrateAllSectionsToCollabNotes(state) {
+  if (!state || !Array.isArray(state.sections)) return;
+  state.sections.forEach(section => {
+    migrateNotesToCollabNotes(section);
+  });
+  if (Array.isArray(state.saved)) {
+    state.saved.forEach(savedItem => {
+      if (Array.isArray(savedItem.sections)) {
+        savedItem.sections.forEach(section => {
+          migrateNotesToCollabNotes(section);
+        });
+      } else if (savedItem.notes) {
+        migrateNotesToCollabNotes(savedItem);
+      }
+    });
+  }
+}
+
 function migrateOldFormat(oldState) {
+  let result;
   if (oldState.sections && Array.isArray(oldState.sections)) {
-    return {
+    result = {
       pieceName: oldState.pieceName || "出场锣鼓-慢起",
       sections: deepCloneSections(oldState.sections),
       currentSectionId: oldState.currentSectionId || oldState.sections[0]?.id || null,
@@ -97,34 +171,38 @@ function migrateOldFormat(oldState) {
       lastPlayedAt: oldState.lastPlayedAt || null,
       recentPlayedSection: oldState.recentPlayedSection || ""
     };
+  } else {
+    const section = {
+      id: crypto.randomUUID(),
+      name: oldState.pieceName || "主段落",
+      bpm: oldState.bpm || 96,
+      loop: oldState.loop || "",
+      notes: Array.isArray(oldState.notes) ? [...oldState.notes] : [],
+      collabNotes: [],
+      pattern: Array.isArray(oldState.pattern)
+        ? oldState.pattern.map((row) => (Array.isArray(row) ? [...row] : []))
+        : instruments.map((instrument) =>
+            Array.from({ length: steps }, (_, index) =>
+              index % 4 === 0 ? instrument.token : ""
+            )
+          ),
+      enabledInstruments: Array.isArray(oldState.enabledInstruments)
+        ? [...oldState.enabledInstruments]
+        : [true, true, true, true]
+    };
+    result = {
+      pieceName: oldState.pieceName || "出场锣鼓-慢起",
+      sections: [section],
+      currentSectionId: section.id,
+      continuousPlay: false,
+      saved: deepCloneSavedList(oldState.saved),
+      playCount: oldState.playCount || 0,
+      lastPlayedAt: oldState.lastPlayedAt || null,
+      recentPlayedSection: oldState.recentPlayedSection || ""
+    };
   }
-  const section = {
-    id: crypto.randomUUID(),
-    name: oldState.pieceName || "主段落",
-    bpm: oldState.bpm || 96,
-    loop: oldState.loop || "",
-    notes: Array.isArray(oldState.notes) ? [...oldState.notes] : [],
-    pattern: Array.isArray(oldState.pattern)
-      ? oldState.pattern.map((row) => (Array.isArray(row) ? [...row] : []))
-      : instruments.map((instrument) =>
-          Array.from({ length: steps }, (_, index) =>
-            index % 4 === 0 ? instrument.token : ""
-          )
-        ),
-    enabledInstruments: Array.isArray(oldState.enabledInstruments)
-      ? [...oldState.enabledInstruments]
-      : [true, true, true, true]
-  };
-  return {
-    pieceName: oldState.pieceName || "出场锣鼓-慢起",
-    sections: [section],
-    currentSectionId: section.id,
-    continuousPlay: false,
-    saved: deepCloneSavedList(oldState.saved),
-    playCount: oldState.playCount || 0,
-    lastPlayedAt: oldState.lastPlayedAt || null,
-    recentPlayedSection: oldState.recentPlayedSection || ""
-  };
+  migrateAllSectionsToCollabNotes(result);
+  return result;
 }
 
 function migrateRehearsalEntry(entry) {
@@ -222,6 +300,8 @@ if (storedState) {
   };
   state.currentSectionId = state.sections[0].id;
 }
+migrateAllSectionsToCollabNotes(state);
+save();
 
 let timer = null;
 let playhead = 0;
@@ -318,6 +398,19 @@ const schemeCompatibility = document.querySelector("#schemeCompatibility");
 const compatibilityList = document.querySelector("#compatibilityList");
 const schemeConfirmBtn = document.querySelector("#schemeConfirmBtn");
 const schemeCancelBtn = document.querySelector("#schemeCancelBtn");
+
+const collabNoteInput = document.querySelector("#collabNoteInput");
+const collabAddBtn = document.querySelector("#collabAddBtn");
+const collabTargetSelect = document.querySelector("#collabTargetSelect");
+const collabNotesList = document.querySelector("#collabNotesList");
+const teacherCountEl = document.querySelector("#teacherCount");
+const studentCountEl = document.querySelector("#studentCount");
+const pendingCountEl = document.querySelector("#pendingCount");
+const resolvedCountEl = document.querySelector("#resolvedCount");
+const collabTypeBtns = document.querySelectorAll(".collab-type-btn");
+const filterTypeBtns = document.querySelectorAll("[data-filter-type]");
+const filterStatusBtns = document.querySelectorAll("[data-filter-status]");
+const sortBtns = document.querySelectorAll("[data-sort]");
 
 const tempoTrainerSection = document.querySelector("#tempoTrainer");
 const tempoTrainerToggle = document.querySelector("#tempoTrainerToggle");
@@ -421,13 +514,27 @@ function renderGrid() {
     });
   }
 
+  const measureNoteTypes = getMeasureNoteTypes();
+
   const header = ['<div class="label-cell">乐器</div>'];
   for (let i = 0; i < steps; i += 1) {
     const question = hiddenStepMap[i];
     const answered = answeredStepMap[i];
     const isRestHidden = question && question.rows.length === 0;
+    const measure = Math.floor(i / 4);
+    const noteTypes = measureNoteTypes[measure];
+    let noteClass = "";
+    if (noteTypes && noteTypes.size > 0) {
+      if (noteTypes.has("teacher") && noteTypes.has("student")) {
+        noteClass = " has-notes has-both-notes";
+      } else if (noteTypes.has("teacher")) {
+        noteClass = " has-notes has-teacher-notes";
+      } else if (noteTypes.has("student")) {
+        noteClass = " has-notes has-student-notes";
+      }
+    }
 
-    let beatClass = "beat-cell";
+    let beatClass = "beat-cell" + noteClass;
     let beatContent = beatLabel(i);
 
     if (isRestHidden) {
@@ -452,8 +559,20 @@ function renderGrid() {
       const question = hiddenStepMap[step];
       const isInstrumentHidden = question && question.rows.length > 0 && question.rows.includes(rowIndex);
       const answered = answeredStepMap[step];
+      const measure = Math.floor(step / 4);
+      const noteTypes = measureNoteTypes[measure];
+      let noteClass = "";
+      if (noteTypes && noteTypes.size > 0 && !diagnosisMode) {
+        if (noteTypes.has("teacher") && noteTypes.has("student")) {
+          noteClass = " has-notes has-both-notes";
+        } else if (noteTypes.has("teacher")) {
+          noteClass = " has-notes has-teacher-notes";
+        } else if (noteTypes.has("student")) {
+          noteClass = " has-notes has-student-notes";
+        }
+      }
 
-      let cellClass = `cell ${value ? "filled" : ""} ${muted ? "muted" : ""}`;
+      let cellClass = `cell ${value ? "filled" : ""} ${muted ? "muted" : ""}${noteClass}`;
       let cellContent = value;
 
       if (isInstrumentHidden) {
@@ -473,6 +592,173 @@ function renderGrid() {
   });
 
   grid.innerHTML = [...header, ...rows].join("");
+}
+
+function getCurrentCollabType() {
+  const checked = document.querySelector('input[name="collabType"]:checked');
+  return checked ? checked.value : "teacher";
+}
+
+function createCollabNote(content, type, target) {
+  const section = getCurrentSection();
+  if (!section) return;
+  const now = new Date().toISOString();
+  const note = {
+    id: crypto.randomUUID(),
+    type: type || "teacher",
+    content: content.trim(),
+    target: target === "all" ? "all" : Number(target),
+    resolved: false,
+    createdAt: now,
+    updatedAt: now
+  };
+  section.collabNotes.unshift(note);
+  save();
+  renderCollabNotes();
+  renderGrid();
+  renderDashboard();
+}
+
+function toggleCollabNoteResolved(noteId) {
+  const section = getCurrentSection();
+  if (!section) return;
+  const note = section.collabNotes.find(n => n.id === noteId);
+  if (!note) return;
+  note.resolved = !note.resolved;
+  note.updatedAt = new Date().toISOString();
+  save();
+  renderCollabNotes();
+  renderGrid();
+  renderDashboard();
+}
+
+function deleteCollabNote(noteId) {
+  const section = getCurrentSection();
+  if (!section) return;
+  if (!confirm("确定要删除这条批注吗？")) return;
+  section.collabNotes = section.collabNotes.filter(n => n.id !== noteId);
+  save();
+  renderCollabNotes();
+  renderGrid();
+  renderDashboard();
+}
+
+function getFilteredCollabNotes() {
+  const section = getCurrentSection();
+  if (!section || !Array.isArray(section.collabNotes)) return [];
+  let notes = [...section.collabNotes];
+  if (collabFilters.type !== "all") {
+    notes = notes.filter(n => n.type === collabFilters.type);
+  }
+  if (collabFilters.status !== "all") {
+    notes = notes.filter(n => collabFilters.status === "resolved" ? n.resolved : !n.resolved);
+  }
+  if (collabFilters.sort === "newest") {
+    notes.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  } else {
+    notes.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  }
+  return notes;
+}
+
+function getCollabNotesStats() {
+  const section = getCurrentSection();
+  if (!section || !Array.isArray(section.collabNotes)) {
+    return { teacher: 0, student: 0, pending: 0, resolved: 0, total: 0 };
+  }
+  const notes = section.collabNotes;
+  return {
+    teacher: notes.filter(n => n.type === "teacher").length,
+    student: notes.filter(n => n.type === "student").length,
+    pending: notes.filter(n => !n.resolved).length,
+    resolved: notes.filter(n => n.resolved).length,
+    total: notes.length
+  };
+}
+
+function getMeasureNoteTypes() {
+  const section = getCurrentSection();
+  if (!section || !Array.isArray(section.collabNotes)) return {};
+  const measureTypes = {};
+  section.collabNotes.forEach(note => {
+    if (note.target === "all") {
+      for (let i = 0; i < 4; i++) {
+        if (!measureTypes[i]) measureTypes[i] = new Set();
+        measureTypes[i].add(note.type);
+      }
+    } else {
+      if (!measureTypes[note.target]) measureTypes[note.target] = new Set();
+      measureTypes[note.target].add(note.type);
+    }
+  });
+  return measureTypes;
+}
+
+function formatCollabTime(isoString) {
+  if (!isoString) return "";
+  const d = new Date(isoString);
+  const now = new Date();
+  const diff = now - d;
+  if (diff < 60000) return "刚刚";
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`;
+  return d.toLocaleDateString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function renderCollabStats() {
+  const stats = getCollabNotesStats();
+  if (teacherCountEl) teacherCountEl.textContent = stats.teacher;
+  if (studentCountEl) studentCountEl.textContent = stats.student;
+  if (pendingCountEl) pendingCountEl.textContent = stats.pending;
+  if (resolvedCountEl) resolvedCountEl.textContent = stats.resolved;
+}
+
+function renderCollabNotes() {
+  const section = getCurrentSection();
+  if (!section || !collabNotesList) return;
+  renderCollabStats();
+  const notes = getFilteredCollabNotes();
+  if (notes.length === 0) {
+    collabNotesList.innerHTML = `
+      <div class="empty-collab-notes">
+        暂无协作批注<br>
+        在上方输入框添加老师批注或学生反馈
+      </div>
+    `;
+    return;
+  }
+  collabNotesList.innerHTML = notes.map(note => {
+    const typeLabel = note.type === "teacher" ? "👨‍🏫 老师" : "👨‍🎓 学生";
+    const targetLabel = note.target === "all" ? "全段" : `第${note.target + 1}小节`;
+    const statusLabel = note.resolved ? "✅ 已解决" : "⏳ 未解决";
+    const typeClass = note.type === "teacher" ? "teacher-note" : "student-note";
+    const resolvedClass = note.resolved ? "resolved" : "";
+    const targetClass = note.target === "all" ? "target-all" : "target-measure";
+    const statusClass = note.resolved ? "status-resolved" : "status-pending";
+    const resolveBtn = note.resolved
+      ? `<button type="button" class="collab-action-btn unresolve-btn" data-collab-unresolve="${note.id}" title="标记为未解决">↩</button>`
+      : `<button type="button" class="collab-action-btn resolve-btn" data-collab-resolve="${note.id}" title="标记为已解决">✓</button>`;
+    return `
+      <div class="collab-note ${typeClass} ${resolvedClass}" data-collab-id="${note.id}">
+        <div class="collab-note-header">
+          <div class="collab-note-tags">
+            <span class="collab-tag type-${note.type}">${typeLabel}</span>
+            <span class="collab-tag ${targetClass}">${targetLabel}</span>
+            <span class="collab-tag ${statusClass}">${statusLabel}</span>
+          </div>
+          <div class="collab-note-actions">
+            ${resolveBtn}
+            <button type="button" class="collab-action-btn delete-btn" data-collab-delete="${note.id}" title="删除">✕</button>
+          </div>
+        </div>
+        <div class="collab-note-content">${note.content}</div>
+        <div class="collab-note-footer">
+          <span class="collab-note-time">${formatCollabTime(note.createdAt)}</span>
+          ${note.updatedAt !== note.createdAt ? `<span class="collab-note-time">更新于 ${formatCollabTime(note.updatedAt)}</span>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
 }
 
 function renderVoicePanel() {
@@ -515,9 +801,13 @@ function renderSidebars() {
     <div class="structure-row"><span>第${item.measure}小节</span><strong>${item.count}个口令</strong></div>
   `).join("");
 
-  notesList.innerHTML = section.notes.length ? section.notes.map((note) => `
-    <article class="note"><p>${note}</p></article>
-  `).join("") : "<p>暂无批注。</p>";
+  if (notesList) {
+    notesList.innerHTML = section.notes.length ? section.notes.map((note) => `
+      <article class="note"><p>${note}</p></article>
+    `).join("") : "<p>暂无批注。</p>";
+  }
+
+  renderCollabNotes();
 
   savedList.innerHTML = state.saved.length ? state.saved.map((item) => {
     const sectionCount = item.sectionCount || (item.sections ? item.sections.length : 1);
@@ -539,11 +829,17 @@ function getMeasureData() {
     const cells = section.pattern.flatMap((row) => row.slice(start, start + 4));
     const filled = cells.filter(Boolean).length;
     const total = cells.length;
-    const notesForMeasure = section.notes.filter((n) =>
+    const oldNotesForMeasure = section.notes.filter((n) =>
       /第\s*([一二三四\d]+)\s*小节/.test(n) &&
       (parseInt(RegExp.$1) === measure + 1 ||
        ["一", "二", "三", "四"][measure] === RegExp.$1)
     );
+    const collabNotesForMeasure = Array.isArray(section.collabNotes)
+      ? section.collabNotes.filter(n =>
+          !n.resolved && (n.target === "all" || n.target === measure)
+        )
+      : [];
+    const allNotesForMeasure = [...oldNotesForMeasure, ...collabNotesForMeasure];
     const instrumentCoverage = section.pattern.filter((row, idx) =>
       section.enabledInstruments[idx] && row.slice(start, start + 4).some(Boolean)
     ).length;
@@ -552,9 +848,9 @@ function getMeasureData() {
       filled,
       total,
       ratio: total ? filled / total : 0,
-      noteCount: notesForMeasure.length,
+      noteCount: allNotesForMeasure.length,
       instrumentCoverage,
-      hasNotes: notesForMeasure.length > 0
+      hasNotes: allNotesForMeasure.length > 0
     };
   });
 }
@@ -599,7 +895,7 @@ function getSuggestions() {
   if (section.loop) {
     const loopNum = Number(section.loop) + 1;
     suggestions.push({ icon: "3", html: `当前循环设置为<strong>第${loopNum}小节</strong>，可使用"停止"切换范围后对比练习。` });
-  } else if (section.notes.length > 0) {
+  } else if (section.notes.length > 0 || (Array.isArray(section.collabNotes) && section.collabNotes.length > 0)) {
     const matchedMeasures = [];
     section.notes.forEach((n) => {
       const m = n.match(/第\s*([一二三四\d]+)\s*小节/);
@@ -610,6 +906,14 @@ function getSuggestions() {
         if (num && !matchedMeasures.includes(num)) matchedMeasures.push(num);
       }
     });
+    if (Array.isArray(section.collabNotes)) {
+      section.collabNotes.forEach((n) => {
+        if (n.target !== "all" && n.target != null) {
+          const num = n.target + 1;
+          if (!matchedMeasures.includes(num)) matchedMeasures.push(num);
+        }
+      });
+    }
     if (matchedMeasures.length > 0) {
       const mNames = matchedMeasures.sort().map((n) => `第${n}小节`).join("、");
       suggestions.push({ icon: "3", html: `批注中提到了<strong>${mNames}</strong>，建议循环对应小节逐句突破。` });
@@ -662,7 +966,8 @@ function renderDashboard() {
   completionPercent.textContent = `${percent}%`;
   completionDetail.textContent = `${filledCells}/${totalCells} 个口令`;
 
-  difficultyCount.textContent = section.notes.length;
+  const collabStats = getCollabNotesStats();
+  difficultyCount.textContent = collabStats.total;
   savedCount.textContent = state.saved.length;
   playCount.textContent = state.playCount || 0;
 
@@ -1325,7 +1630,23 @@ noteInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || !noteInput.value.trim()) return;
   const section = getCurrentSection();
   if (!section) return;
-  section.notes.unshift(noteInput.value.trim());
+  const content = noteInput.value.trim();
+  section.notes.unshift(content);
+  if (!Array.isArray(section.collabNotes)) {
+    section.collabNotes = [];
+  }
+  const measure = parseMeasureFromNote(content);
+  const now = new Date().toISOString();
+  section.collabNotes.unshift({
+    id: crypto.randomUUID(),
+    type: "teacher",
+    content: content,
+    target: measure !== null ? measure : "all",
+    resolved: false,
+    createdAt: now,
+    updatedAt: now,
+    _fromLegacy: true
+  });
   noteInput.value = "";
   save();
   render();
@@ -3179,6 +3500,90 @@ diagnosisAnswerButtons.addEventListener("click", (event) => {
 });
 
 loadLastDiagnosisResult();
+
+if (collabAddBtn) {
+  collabAddBtn.addEventListener("click", () => {
+    if (!collabNoteInput || !collabNoteInput.value.trim()) return;
+    const type = getCurrentCollabType();
+    const target = collabTargetSelect ? collabTargetSelect.value : "all";
+    createCollabNote(collabNoteInput.value, type, target);
+    collabNoteInput.value = "";
+  });
+}
+
+if (collabNoteInput) {
+  collabNoteInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || !collabNoteInput.value.trim()) return;
+    const type = getCurrentCollabType();
+    const target = collabTargetSelect ? collabTargetSelect.value : "all";
+    createCollabNote(collabNoteInput.value, type, target);
+    collabNoteInput.value = "";
+  });
+}
+
+if (collabTypeBtns) {
+  collabTypeBtns.forEach(btn => {
+    btn.addEventListener("click", () => {
+      collabTypeBtns.forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+    });
+  });
+}
+
+if (filterTypeBtns) {
+  filterTypeBtns.forEach(btn => {
+    btn.addEventListener("click", () => {
+      const type = btn.dataset.filterType;
+      collabFilters.type = type;
+      filterTypeBtns.forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderCollabNotes();
+    });
+  });
+}
+
+if (filterStatusBtns) {
+  filterStatusBtns.forEach(btn => {
+    btn.addEventListener("click", () => {
+      const status = btn.dataset.filterStatus;
+      collabFilters.status = status;
+      filterStatusBtns.forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderCollabNotes();
+    });
+  });
+}
+
+if (sortBtns) {
+  sortBtns.forEach(btn => {
+    btn.addEventListener("click", () => {
+      const sort = btn.dataset.sort;
+      collabFilters.sort = sort;
+      sortBtns.forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderCollabNotes();
+    });
+  });
+}
+
+if (collabNotesList) {
+  collabNotesList.addEventListener("click", (event) => {
+    const resolveBtn = event.target.closest("[data-collab-resolve]");
+    const unresolveBtn = event.target.closest("[data-collab-unresolve]");
+    const deleteBtn = event.target.closest("[data-collab-delete]");
+
+    if (resolveBtn) {
+      const noteId = resolveBtn.dataset.collabResolve;
+      toggleCollabNoteResolved(noteId);
+    } else if (unresolveBtn) {
+      const noteId = unresolveBtn.dataset.collabUnresolve;
+      toggleCollabNoteResolved(noteId);
+    } else if (deleteBtn) {
+      const noteId = deleteBtn.dataset.collabDelete;
+      deleteCollabNote(noteId);
+    }
+  });
+}
 
 render();
 

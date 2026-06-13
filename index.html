@@ -37,7 +37,7 @@
           <option value="3">第4小节</option>
         </select>
       </label>
-      <label>难点批注<input id="noteInput" placeholder="如：第2小节小锣晚半拍"></label>
+      <label>协作批注<input id="noteInput" placeholder="输入批注内容，按回车添加"></label>
     </section>
 
     <section class="tempo-trainer" id="tempoTrainer">
@@ -400,8 +400,76 @@
       <aside class="notes">
         <h2>段落结构</h2>
         <div id="structure"></div>
-        <h2>批注</h2>
-        <div id="notesList"></div>
+
+        <div class="collab-notes">
+          <div class="collab-notes-header">
+            <h2>👥 师生协作批注板</h2>
+          </div>
+
+          <div class="collab-notes-input">
+            <div class="collab-input-row">
+              <div class="collab-type-selector">
+                <label class="collab-type-btn teacher-type active">
+                  <input type="radio" name="collabType" value="teacher" checked>
+                  <span>👨‍🏫 老师批注</span>
+                </label>
+                <label class="collab-type-btn student-type">
+                  <input type="radio" name="collabType" value="student">
+                  <span>👨‍🎓 学生反馈</span>
+                </label>
+              </div>
+              <div class="collab-target-selector">
+                <label>目标：</label>
+                <select id="collabTargetSelect">
+                  <option value="all">全段</option>
+                  <option value="0">第1小节</option>
+                  <option value="1">第2小节</option>
+                  <option value="2">第3小节</option>
+                  <option value="3">第4小节</option>
+                </select>
+              </div>
+            </div>
+            <div class="collab-input-row collab-input-main">
+              <input type="text" id="collabNoteInput" placeholder="输入批注内容，按回车添加..." class="collab-input">
+              <button type="button" id="collabAddBtn" class="collab-add-btn">添加</button>
+            </div>
+          </div>
+
+          <div class="collab-notes-filters">
+            <div class="filter-group">
+              <span class="filter-label">类型：</span>
+              <div class="filter-buttons">
+                <button type="button" class="filter-btn active" data-filter-type="all">全部</button>
+                <button type="button" class="filter-btn teacher-filter" data-filter-type="teacher">老师</button>
+                <button type="button" class="filter-btn student-filter" data-filter-type="student">学生</button>
+              </div>
+            </div>
+            <div class="filter-group">
+              <span class="filter-label">状态：</span>
+              <div class="filter-buttons">
+                <button type="button" class="filter-btn active" data-filter-status="all">全部</button>
+                <button type="button" class="filter-btn" data-filter-status="pending">未解决</button>
+                <button type="button" class="filter-btn" data-filter-status="resolved">已解决</button>
+              </div>
+            </div>
+            <div class="filter-group">
+              <span class="filter-label">排序：</span>
+              <div class="filter-buttons">
+                <button type="button" class="filter-btn active" data-sort="newest">最新</button>
+                <button type="button" class="filter-btn" data-sort="oldest">最早</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="collab-notes-stats">
+            <span class="stat-badge teacher-stat">👨‍🏫 <span id="teacherCount">0</span></span>
+            <span class="stat-badge student-stat">👨‍🎓 <span id="studentCount">0</span></span>
+            <span class="stat-badge pending-stat">⏳ <span id="pendingCount">0</span></span>
+            <span class="stat-badge resolved-stat">✅ <span id="resolvedCount">0</span></span>
+          </div>
+
+          <div id="collabNotesList" class="collab-notes-list"></div>
+        </div>
       </aside>
     </section>
   </main>
