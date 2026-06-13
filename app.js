@@ -4295,7 +4295,11 @@ function restoreFromCompare(restoreAll) {
       } else {
         const idx = state.sections.indexOf(curSection);
         if (idx >= 0) {
-          state.sections[idx] = deepCloneSection(histSection);
+          const restoredSection = deepCloneSection(histSection);
+          state.sections[idx] = restoredSection;
+          if (state.currentSectionId === curSection.id) {
+            state.currentSectionId = restoredSection.id;
+          }
         }
       }
     });
