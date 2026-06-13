@@ -235,6 +235,7 @@ let pendingRehearsalResume = null;
 const diagnosisStorageKey = "wxyy-4-diagnosis-result";
 let diagnosisMode = false;
 let diagnosisActive = false;
+let diagnosisTimer = null;
 let diagnosisHiddenCells = [];
 let diagnosisCurrentStep = -1;
 let diagnosisAnswers = [];
@@ -372,19 +373,38 @@ function renderGrid() {
   const section = getCurrentSection();
   if (!section) return;
 
-  const header = ['<div class="label-cell">乐器</div>'];
-  for (let i = 0; i < steps; i += 1) {
-    header.push(`<div class="beat-cell">${beatLabel(i)}</div>`);
+  const hiddenStepMap = {};
+  const answeredStepMap = {};
+  if (diagnosisMode) {
+    diagnosisHiddenCells.forEach(q => {
+      hiddenStepMap[q.step] = q;
+    });
+    diagnosisAnswers.forEach(a => {
+      answeredStepMap[a.step] = a;
+    });
   }
 
-  const hiddenSet = diagnosisMode && diagnosisActive
-    ? new Set(diagnosisHiddenCells.map(c => `${c.row}-${c.step}`))
-    : null;
-  const answeredMap = {};
-  if (diagnosisMode && diagnosisActive) {
-    diagnosisAnswers.forEach(a => {
-      answeredMap[`${a.row}-${a.step}`] = a;
-    });
+  const header = ['<div class="label-cell">乐器</div>'];
+  for (let i = 0; i < steps; i += 1) {
+    const question = hiddenStepMap[i];
+    const answered = answeredStepMap[i];
+    const isRestHidden = question && question.rows.length === 0;
+
+    let beatClass = "beat-cell";
+    let beatContent = beatLabel(i);
+
+    if (isRestHidden) {
+      beatClass += " hidden-cell hidden-rest";
+      if (answered) {
+        beatClass += answered.correct ? " answered-correct" : " answered-wrong";
+        beatContent = beatLabel(i);
+        if (!answered.correct) {
+          beatContent += `<span class="correct-answer">休止</span>`;
+        }
+      }
+    }
+
+    header.push(`<div class="${beatClass}" data-step="${i}">${beatContent}</div>`);
   }
 
   const rows = instruments.flatMap((instrument, rowIndex) => {
@@ -392,19 +412,20 @@ function renderGrid() {
     const row = [`<div class="label-cell ${muted ? "muted" : ""}">${instrument.name}</div>`];
     for (let step = 0; step < steps; step += 1) {
       const value = section.pattern[rowIndex][step];
-      const isHidden = hiddenSet ? hiddenSet.has(`${rowIndex}-${step}`) : false;
-      const answered = answeredMap[`${rowIndex}-${step}`];
+      const question = hiddenStepMap[step];
+      const isInstrumentHidden = question && question.rows.length > 0 && question.rows.includes(rowIndex);
+      const answered = answeredStepMap[step];
 
       let cellClass = `cell ${value ? "filled" : ""} ${muted ? "muted" : ""}`;
       let cellContent = value;
 
-      if (isHidden) {
+      if (isInstrumentHidden) {
         cellClass += " hidden-cell";
         if (answered) {
           cellClass += answered.correct ? " answered-correct" : " answered-wrong";
-          cellContent = value || "0";
-          if (!answered.correct) {
-            cellContent += `<span class="correct-answer">${value || "0"}</span>`;
+          cellContent = value || "";
+          if (!answered.correct && value) {
+            cellContent += `<span class="correct-answer">${value}</span>`;
           }
         }
       }
@@ -1058,6 +1079,11 @@ function tick() {
 }
 
 function startPlayback() {
+  if (diagnosisActive) {
+    alert("诊断练习进行中，请先结束诊断练习再使用普通播放。");
+    return;
+  }
+
   if (timer) clearInterval(timer);
 
   let section = getPlaySection();
@@ -1129,6 +1155,8 @@ function startPlayback() {
 }
 
 function stopPlayback() {
+  if (diagnosisActive) return;
+
   clearInterval(timer);
   timer = null;
   document.querySelectorAll(".cell.playing").forEach((cell) => cell.classList.remove("playing"));
@@ -1203,6 +1231,10 @@ bpmInput.addEventListener("input", () => {
   if (timer && !state.continuousPlay) {
     clearInterval(timer);
     timer = setInterval(tick, 60000 / section.bpm);
+  }
+  if (diagnosisTimer && !diagnosisPaused) {
+    clearInterval(diagnosisTimer);
+    diagnosisTimer = setInterval(diagnosisTick, 60000 / section.bpm);
   }
 });
 
@@ -1993,6 +2025,18 @@ function saveDiagnosisResult(result) {
   } catch {}
 }
 
+function updatePlayButtonsState() {
+  const playBtn = document.querySelector("#playBtn");
+  const stopBtn = document.querySelector("#stopBtn");
+  if (playBtn) {
+    playBtn.disabled = diagnosisActive;
+    playBtn.title = diagnosisActive ? "诊断练习进行中" : "";
+  }
+  if (stopBtn) {
+    stopBtn.disabled = diagnosisActive;
+  }
+}
+
 function getDifficultyRatio() {
   const difficulty = diagnosisDifficulty.value;
   switch (difficulty) {
@@ -2007,25 +2051,39 @@ function generateHiddenCells() {
   if (!section) return [];
 
   const ratio = getDifficultyRatio();
-  const filledCells = [];
-
-  for (let row = 0; row < instruments.length; row++) {
-    for (let step = 0; step < steps; step++) {
-      if (section.pattern[row][step]) {
-        filledCells.push({ row, step });
-      }
-    }
-  }
+  const candidateSteps = [];
 
   for (let step = 0; step < steps; step++) {
-    const hasAny = instruments.some((_, row) => section.pattern[row][step]);
-    if (!hasAny) {
-      filledCells.push({ row: -1, step });
+    const activeRows = [];
+    for (let row = 0; row < instruments.length; row++) {
+      if (section.pattern[row][step]) {
+        activeRows.push(row);
+      }
+    }
+
+    if (activeRows.length === 0) {
+      candidateSteps.push({
+        step: step,
+        rows: [],
+        correctAnswer: -1
+      });
+    } else if (activeRows.length === 1) {
+      candidateSteps.push({
+        step: step,
+        rows: [activeRows[0]],
+        correctAnswer: activeRows[0]
+      });
+    } else if (activeRows.length > 1) {
+      candidateSteps.push({
+        step: step,
+        rows: activeRows,
+        correctAnswer: activeRows
+      });
     }
   }
 
-  const totalQuestions = Math.max(4, Math.floor(filledCells.length * ratio));
-  const shuffled = [...filledCells].sort(() => Math.random() - 0.5);
+  const totalQuestions = Math.max(3, Math.floor(candidateSteps.length * ratio));
+  const shuffled = [...candidateSteps].sort(() => Math.random() - 0.5);
   const selected = shuffled.slice(0, Math.min(totalQuestions, shuffled.length));
 
   selected.sort((a, b) => a.step - b.step);
@@ -2044,13 +2102,24 @@ function updateDiagnosisInfo() {
   diagnosisAccuracy.textContent = answered > 0 ? `${accuracy}%` : "—";
 }
 
+function formatAnswerLabel(answer) {
+  if (answer === -1) return "休止";
+  if (answer === "ensemble") return "合奏";
+  if (Array.isArray(answer)) {
+    if (answer.length === 0) return "休止";
+    if (answer.length === 1) return instruments[answer[0]]?.name || "未知";
+    return answer.map(r => instruments[r]?.name).filter(Boolean).join("+");
+  }
+  return instruments[answer]?.name || "未知";
+}
+
 function showDiagnosisFeedback(correct, correctAnswer, userAnswer) {
   diagnosisFeedback.className = "diagnosis-feedback " + (correct ? "correct" : "wrong");
   if (correct) {
     diagnosisFeedback.textContent = "✓ 回答正确！";
   } else {
-    const correctName = correctAnswer === -1 ? "休止" : instruments[correctAnswer]?.name || "未知";
-    const userName = userAnswer === -1 ? "休止" : instruments[userAnswer]?.name || "未知";
+    const correctName = formatAnswerLabel(correctAnswer);
+    const userName = formatAnswerLabel(userAnswer);
     diagnosisFeedback.innerHTML = `✗ 回答错误！正确答案：<strong>${correctName}</strong>，你的答案：<strong>${userName}</strong>`;
   }
 }
@@ -2075,7 +2144,29 @@ function getCurrentQuestion() {
   return diagnosisHiddenCells[diagnosisCurrentStep];
 }
 
-function answerDiagnosis(answerIndex) {
+function isAnswerCorrect(userAnswer, correctAnswer) {
+  if (Array.isArray(correctAnswer)) {
+    if (correctAnswer.length === 0) {
+      return userAnswer === -1;
+    }
+    if (correctAnswer.length === 1) {
+      return userAnswer === correctAnswer[0];
+    }
+    return userAnswer === "ensemble";
+  }
+  return userAnswer === correctAnswer;
+}
+
+function getPrimaryCorrectAnswer(correctAnswer) {
+  if (Array.isArray(correctAnswer)) {
+    if (correctAnswer.length === 0) return -1;
+    if (correctAnswer.length === 1) return correctAnswer[0];
+    return "ensemble";
+  }
+  return correctAnswer;
+}
+
+function answerDiagnosis(answerIndexRaw) {
   if (!diagnosisWaitingForAnswer || !diagnosisActive) return;
 
   const question = getCurrentQuestion();
@@ -2084,33 +2175,36 @@ function answerDiagnosis(answerIndex) {
   const section = getCurrentSection();
   if (!section) return;
 
-  let correctAnswer;
-  if (question.row === -1) {
-    correctAnswer = -1;
+  let userAnswer;
+  if (answerIndexRaw === "ensemble") {
+    userAnswer = "ensemble";
   } else {
-    correctAnswer = section.pattern[question.row][question.step] ? question.row : -1;
+    userAnswer = Number(answerIndexRaw);
   }
 
-  const isCorrect = answerIndex === correctAnswer;
+  const correctAnswer = question.correctAnswer;
+  const isCorrect = isAnswerCorrect(userAnswer, correctAnswer);
+  const primaryCorrect = getPrimaryCorrectAnswer(correctAnswer);
 
   const buttons = diagnosisAnswerButtons.querySelectorAll(".diagnosis-answer-btn");
   buttons.forEach(btn => {
-    const btnAnswer = Number(btn.dataset.answer);
-    if (btnAnswer === correctAnswer) {
+    const btnAnswerRaw = btn.dataset.answer;
+    const btnAnswer = btnAnswerRaw === "ensemble" ? "ensemble" : Number(btnAnswerRaw);
+    if (btnAnswer === primaryCorrect) {
       btn.classList.add("correct");
     }
-    if (btnAnswer === answerIndex && !isCorrect) {
+    if (btnAnswer === userAnswer && !isCorrect) {
       btn.classList.add("wrong");
     }
   });
 
   enableAnswerButtons(false);
-  showDiagnosisFeedback(isCorrect, correctAnswer, answerIndex);
+  showDiagnosisFeedback(isCorrect, correctAnswer, userAnswer);
 
   diagnosisAnswers.push({
-    row: question.row,
     step: question.step,
-    userAnswer: answerIndex,
+    rows: question.rows,
+    userAnswer: userAnswer,
     correctAnswer: correctAnswer,
     correct: isCorrect,
     beatLabel: beatLabel(question.step)
@@ -2120,22 +2214,85 @@ function answerDiagnosis(answerIndex) {
     diagnosisStats.wrongPositions.push({
       step: question.step,
       beatLabel: beatLabel(question.step),
-      row: question.row,
-      correctAnswer,
-      userAnswer: answerIndex,
-      instrumentName: question.row === -1 ? "休止" : instruments[question.row]?.name
+      rows: question.rows,
+      correctAnswer: correctAnswer,
+      userAnswer: userAnswer
     });
 
-    if (correctAnswer >= 0 && answerIndex >= 0) {
-      const key = `${Math.min(correctAnswer, answerIndex)}-${Math.max(correctAnswer, answerIndex)}`;
+    const correctInstrs = Array.isArray(correctAnswer)
+      ? correctAnswer
+      : (correctAnswer === -1 ? [] : (typeof correctAnswer === "number" ? [correctAnswer] : []));
+    let userInstrs;
+    if (userAnswer === "ensemble") {
+      userInstrs = correctInstrs.length > 0
+        ? instruments.map((_, i) => i).filter(i => !correctInstrs.includes(i))
+        : [];
+    } else if (userAnswer === -1) {
+      userInstrs = [];
+    } else if (typeof userAnswer === "number") {
+      userInstrs = [userAnswer];
+    } else {
+      userInstrs = [];
+    }
+
+    if (correctInstrs.length === 0 && userInstrs.length > 0) {
+      const key = "rest-" + userInstrs[0];
       if (!diagnosisStats.confusedInstruments[key]) {
         diagnosisStats.confusedInstruments[key] = {
-          instr1: Math.min(correctAnswer, answerIndex),
-          instr2: Math.max(correctAnswer, answerIndex),
+          type: "rest-vs-instr",
+          instr1: -1,
+          instr2: userInstrs[0],
+          label: `休止 ↔ ${instruments[userInstrs[0]]?.name}`,
           count: 0
         };
       }
       diagnosisStats.confusedInstruments[key].count++;
+    } else if (correctInstrs.length > 0 && userInstrs.length === 0) {
+      const key = "rest-" + correctInstrs[0];
+      if (!diagnosisStats.confusedInstruments[key]) {
+        diagnosisStats.confusedInstruments[key] = {
+          type: "rest-vs-instr",
+          instr1: -1,
+          instr2: correctInstrs[0],
+          label: `休止 ↔ ${instruments[correctInstrs[0]]?.name}`,
+          count: 0
+        };
+      }
+      diagnosisStats.confusedInstruments[key].count++;
+    } else if (correctInstrs.length > 1 && typeof userAnswer === "number" && userAnswer >= 0) {
+      correctInstrs.forEach(ci => {
+        if (ci !== userAnswer) {
+          const key = `${Math.min(ci, userAnswer)}-${Math.max(ci, userAnswer)}`;
+          if (!diagnosisStats.confusedInstruments[key]) {
+            diagnosisStats.confusedInstruments[key] = {
+              type: "instr-vs-instr",
+              instr1: Math.min(ci, userAnswer),
+              instr2: Math.max(ci, userAnswer),
+              label: `${instruments[Math.min(ci, userAnswer)]?.name} ↔ ${instruments[Math.max(ci, userAnswer)]?.name}`,
+              count: 0
+            };
+          }
+          diagnosisStats.confusedInstruments[key].count++;
+        }
+      });
+    } else {
+      correctInstrs.forEach(ci => {
+        userInstrs.forEach(ui => {
+          if (ci !== ui) {
+            const key = `${Math.min(ci, ui)}-${Math.max(ci, ui)}`;
+            if (!diagnosisStats.confusedInstruments[key]) {
+              diagnosisStats.confusedInstruments[key] = {
+                type: "instr-vs-instr",
+                instr1: Math.min(ci, ui),
+                instr2: Math.max(ci, ui),
+                label: `${instruments[Math.min(ci, ui)]?.name} ↔ ${instruments[Math.max(ci, ui)]?.name}`,
+                count: 0
+              };
+            }
+            diagnosisStats.confusedInstruments[key].count++;
+          }
+        });
+      });
     }
   }
 
@@ -2172,7 +2329,7 @@ function continueDiagnosisPlayback() {
   if (!section) return;
 
   const bpm = section.bpm;
-  timer = setInterval(diagnosisTick, 60000 / bpm);
+  diagnosisTimer = setInterval(diagnosisTick, 60000 / bpm);
 }
 
 function diagnosisTick() {
@@ -2185,8 +2342,8 @@ function diagnosisTick() {
   const nextQuestion = diagnosisHiddenCells[diagnosisCurrentStep];
 
   if (nextQuestion && playhead === nextQuestion.step) {
-    clearInterval(timer);
-    timer = null;
+    clearInterval(diagnosisTimer);
+    diagnosisTimer = null;
     diagnosisPaused = true;
     diagnosisWaitingForAnswer = true;
     diagnosisStatus.textContent = "请作答...";
@@ -2234,6 +2391,15 @@ function startDiagnosis() {
     stopPlayback();
   }
 
+  if (currentRehearsalId) {
+    stopPlayback();
+  }
+
+  if (diagnosisTimer) {
+    clearInterval(diagnosisTimer);
+    diagnosisTimer = null;
+  }
+
   diagnosisHiddenCells = generateHiddenCells();
   if (diagnosisHiddenCells.length === 0) {
     alert("当前谱面没有足够的内容用于诊断练习，请先填入口令。");
@@ -2262,6 +2428,7 @@ function startDiagnosis() {
   diagnosisAnswerPanel.style.display = "none";
   diagnosisStatus.textContent = "准备开始...";
 
+  updatePlayButtonsState();
   updateDiagnosisInfo();
   renderGrid();
 
@@ -2269,16 +2436,16 @@ function startDiagnosis() {
     if (diagnosisActive) {
       diagnosisStatus.textContent = "播放中...";
       const bpm = section.bpm;
-      timer = setInterval(diagnosisTick, 60000 / bpm);
+      diagnosisTimer = setInterval(diagnosisTick, 60000 / bpm);
       diagnosisTick();
     }
   }, 500);
 }
 
 function stopDiagnosis() {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
+  if (diagnosisTimer) {
+    clearInterval(diagnosisTimer);
+    diagnosisTimer = null;
   }
 
   diagnosisActive = false;
@@ -2293,17 +2460,22 @@ function stopDiagnosis() {
 
   document.querySelectorAll(".cell.playing").forEach((cell) => cell.classList.remove("playing"));
 
+  updatePlayButtonsState();
   renderGrid();
 
   if (diagnosisAnswers.length > 0) {
+    const result = buildDiagnosisResultData();
+    saveDiagnosisResult(result);
     showDiagnosisResult();
   }
 }
 
 function finishDiagnosis() {
   stopDiagnosis();
+}
 
-  const result = {
+function buildDiagnosisResultData() {
+  return {
     timestamp: new Date().toISOString(),
     sectionName: getCurrentSection()?.name || "",
     pieceName: state.pieceName,
@@ -2316,12 +2488,10 @@ function finishDiagnosis() {
     accuracy: diagnosisAnswers.length > 0
       ? Math.round((diagnosisStats.correct / diagnosisAnswers.length) * 100)
       : 0,
-    wrongPositions: diagnosisStats.wrongPositions,
+    wrongPositions: [...diagnosisStats.wrongPositions],
     confusedInstruments: Object.values(diagnosisStats.confusedInstruments).sort((a, b) => b.count - a.count),
     durationMs: diagnosisStartTime ? Date.now() - diagnosisStartTime : null
   };
-
-  saveDiagnosisResult(result);
 }
 
 function showDiagnosisResult() {
@@ -2340,8 +2510,8 @@ function showDiagnosisResult() {
       <span class="wrong-position-item">
         <span class="wrong-beat">${pos.beatLabel}</span>
         <span class="wrong-instrument">
-          答：${pos.userAnswer === -1 ? "休止" : instruments[pos.userAnswer]?.name}
-          → 正确：${pos.correctAnswer === -1 ? "休止" : instruments[pos.correctAnswer]?.name}
+          答：${formatAnswerLabel(pos.userAnswer)}
+          → 正确：${formatAnswerLabel(pos.correctAnswer)}
         </span>
       </span>
     `).join("");
@@ -2351,12 +2521,16 @@ function showDiagnosisResult() {
 
   const confusedList = Object.values(diagnosisStats.confusedInstruments).sort((a, b) => b.count - a.count);
   if (confusedList.length > 0) {
-    confusedInstrumentsEl.innerHTML = confusedList.map(item => `
-      <span class="confused-item">
-        ${instruments[item.instr1]?.name} ↔ ${instruments[item.instr2]?.name}
-        <span class="confused-count">${item.count}次</span>
-      </span>
-    `).join("");
+    confusedInstrumentsEl.innerHTML = confusedList.map(item => {
+      const name1 = item.instr1 === -1 ? "休止" : (instruments[item.instr1]?.name || "未知");
+      const name2 = item.instr2 === -1 ? "休止" : (instruments[item.instr2]?.name || "未知");
+      return `
+        <span class="confused-item">
+          ${name1} ↔ ${name2}
+          <span class="confused-count">${item.count}次</span>
+        </span>
+      `;
+    }).join("");
   } else {
     confusedInstrumentsEl.innerHTML = '<span class="diagnosis-empty">暂无混淆记录</span>';
   }
@@ -2377,8 +2551,8 @@ function showLastDiagnosisResult() {
       <span class="wrong-position-item">
         <span class="wrong-beat">${pos.beatLabel}</span>
         <span class="wrong-instrument">
-          答：${pos.userAnswer === -1 ? "休止" : instruments[pos.userAnswer]?.name}
-          → 正确：${pos.correctAnswer === -1 ? "休止" : instruments[pos.correctAnswer]?.name}
+          答：${formatAnswerLabel(pos.userAnswer)}
+          → 正确：${formatAnswerLabel(pos.correctAnswer)}
         </span>
       </span>
     `).join("");
@@ -2387,12 +2561,22 @@ function showLastDiagnosisResult() {
   }
 
   if (lastDiagnosisResult.confusedInstruments && lastDiagnosisResult.confusedInstruments.length > 0) {
-    confusedInstrumentsEl.innerHTML = lastDiagnosisResult.confusedInstruments.map(item => `
-      <span class="confused-item">
-        ${instruments[item.instr1]?.name} ↔ ${instruments[item.instr2]?.name}
-        <span class="confused-count">${item.count}次</span>
-      </span>
-    `).join("");
+    confusedInstrumentsEl.innerHTML = lastDiagnosisResult.confusedInstruments.map(item => {
+      let label;
+      if (item.label) {
+        label = item.label;
+      } else {
+        const name1 = item.instr1 === -1 ? "休止" : (instruments[item.instr1]?.name || "未知");
+        const name2 = item.instr2 === -1 ? "休止" : (instruments[item.instr2]?.name || "未知");
+        label = `${name1} ↔ ${name2}`;
+      }
+      return `
+        <span class="confused-item">
+          ${label}
+          <span class="confused-count">${item.count}次</span>
+        </span>
+      `;
+    }).join("");
   } else {
     confusedInstrumentsEl.innerHTML = '<span class="diagnosis-empty">暂无混淆记录</span>';
   }
@@ -2423,6 +2607,7 @@ function toggleDiagnosisMode() {
       showLastDiagnosisResult();
     }
 
+    updatePlayButtonsState();
     renderGrid();
   } else {
     if (diagnosisActive) {
@@ -2433,8 +2618,20 @@ function toggleDiagnosisMode() {
       stopDiagnosis();
     }
 
+    diagnosisHiddenCells = [];
+    diagnosisAnswers = [];
+    diagnosisCurrentStep = -1;
+    diagnosisStats = {
+      total: 0,
+      correct: 0,
+      wrong: 0,
+      wrongPositions: [],
+      confusedInstruments: {}
+    };
+
     diagnosisPanel.style.display = "none";
     diagnosisToggleBtn.classList.remove("active");
+    updatePlayButtonsState();
     renderGrid();
   }
 }
@@ -2456,7 +2653,8 @@ diagnosisCloseBtn.addEventListener("click", () => {
 diagnosisAnswerButtons.addEventListener("click", (event) => {
   const btn = event.target.closest(".diagnosis-answer-btn");
   if (!btn || btn.disabled) return;
-  const answer = Number(btn.dataset.answer);
+  const raw = btn.dataset.answer;
+  const answer = raw === "ensemble" ? "ensemble" : Number(raw);
   answerDiagnosis(answer);
 });
 

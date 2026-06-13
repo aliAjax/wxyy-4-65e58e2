@@ -2056,7 +2056,7 @@ select {
 
 .diagnosis-answer-buttons {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -2114,6 +2114,12 @@ select {
 .diagnosis-rest-btn .answer-token {
   background: #f3f4f6;
   color: var(--muted);
+}
+
+.diagnosis-ensemble-btn .answer-token {
+  background: linear-gradient(135deg, #ede9fe, #ddd6fe);
+  color: #5b21b6;
+  font-size: 18px;
 }
 
 .answer-name {
@@ -2288,6 +2294,58 @@ select {
   font-weight: 700;
 }
 
+.beat-cell.hidden-cell {
+  background: repeating-linear-gradient(
+    45deg,
+    #f0e6d6,
+    #f0e6d6 4px,
+    #e8dcc8 4px,
+    #e8dcc8 8px
+  ) !important;
+  color: transparent !important;
+  position: relative;
+  font-weight: 900;
+}
+
+.beat-cell.hidden-cell::after {
+  content: "休止?";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 900;
+  opacity: 0.85;
+}
+
+.beat-cell.hidden-cell.answered-correct {
+  background: #d1fae5 !important;
+  color: #047857 !important;
+}
+
+.beat-cell.hidden-cell.answered-correct::after {
+  display: none;
+}
+
+.beat-cell.hidden-cell.answered-wrong {
+  background: #fee2e2 !important;
+  color: #991b1b !important;
+}
+
+.beat-cell.hidden-cell.answered-wrong::after {
+  display: none;
+}
+
+.beat-cell.hidden-cell .correct-answer {
+  position: absolute;
+  bottom: 2px;
+  right: 4px;
+  font-size: 10px;
+  color: #047857;
+  font-weight: 700;
+}
+
 .diagnosis-empty {
   text-align: center;
   color: var(--muted);
@@ -2317,7 +2375,7 @@ select {
   }
 
   .diagnosis-answer-buttons {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
   }
 
   .diagnosis-start-btn,
