@@ -3662,6 +3662,127 @@ function normalizeSavedToSections(item) {
   return [section];
 }
 
+function pairSections(curSections, histSections) {
+  const pairs = [];
+  const curById = new Map(curSections.map(s => [s.id, s]));
+  const histById = new Map(histSections.map(s => [s.id, s]));
+  const usedCur = new Set();
+  const usedHist = new Set();
+
+  for (const cur of curSections) {
+    if (histById.has(cur.id)) {
+      pairs.push({
+        cur,
+        hist: histById.get(cur.id),
+        pairKey: `id:${cur.id}`,
+        matchType: "id",
+        status: "compare",
+        displayIdx: null
+      });
+      usedCur.add(cur.id);
+      usedHist.add(cur.id);
+    }
+  }
+
+  const remainingCur = curSections.filter(s => !usedCur.has(s.id));
+  const remainingHist = histSections.filter(s => !usedHist.has(s.id));
+
+  const histByName = new Map();
+  for (const h of remainingHist) {
+    if (!histByName.has(h.name)) histByName.set(h.name, []);
+    histByName.get(h.name).push(h);
+  }
+
+  for (const cur of remainingCur) {
+    const sameNameList = histByName.get(cur.name);
+    if (sameNameList && sameNameList.length > 0) {
+      const hist = sameNameList.shift();
+      if (sameNameList.length === 0) histByName.delete(cur.name);
+      pairs.push({
+        cur,
+        hist,
+        pairKey: `name:${cur.id}:${hist.id}`,
+        matchType: "name",
+        status: "compare",
+        displayIdx: null
+      });
+      usedCur.add(cur.id);
+      usedHist.add(hist.id);
+    }
+  }
+
+  const leftCur = curSections.filter(s => !usedCur.has(s.id));
+  const leftHist = histSections.filter(s => !usedHist.has(s.id));
+  const maxLen = Math.max(leftCur.length, leftHist.length);
+
+  for (let i = 0; i < maxLen; i++) {
+    const cur = leftCur[i] || null;
+    const hist = leftHist[i] || null;
+    if (cur && hist) {
+      pairs.push({
+        cur,
+        hist,
+        pairKey: `index:${cur.id}:${hist.id}`,
+        matchType: "index",
+        status: "compare",
+        displayIdx: null
+      });
+    } else if (!cur && hist) {
+      pairs.push({
+        cur: null,
+        hist,
+        pairKey: `new:${hist.id}`,
+        matchType: "new",
+        status: "new",
+        displayIdx: null
+      });
+    } else if (cur && !hist) {
+      pairs.push({
+        cur,
+        hist: null,
+        pairKey: `removed:${cur.id}`,
+        matchType: "removed",
+        status: "removed",
+        displayIdx: null
+      });
+    }
+  }
+
+  pairs.sort((a, b) => {
+    const aIdx = a.cur ? curSections.indexOf(a.cur) : (a.hist ? histSections.indexOf(a.hist) + 0.5 : 999);
+    const bIdx = b.cur ? curSections.indexOf(b.cur) : (b.hist ? histSections.indexOf(b.hist) + 0.5 : 999);
+    return aIdx - bIdx;
+  });
+
+  pairs.forEach((p, i) => { p.displayIdx = i + 1; });
+  return pairs;
+}
+
+function computeNoteFieldDiff(curNote, histNote) {
+  const fields = [
+    { key: "content", label: "内容" },
+    { key: "type", label: "类型", format: v => v === "teacher" ? "老师" : v === "student" ? "学生" : v },
+    { key: "target", label: "目标", format: v => v === "all" ? "全段" : `第${Number(v) + 1}小节` },
+    { key: "resolved", label: "状态", format: v => v ? "已解决" : "未解决" }
+  ];
+  const changes = [];
+  for (const f of fields) {
+    const curVal = curNote[f.key];
+    const histVal = histNote[f.key];
+    if (curVal !== histVal) {
+      changes.push({
+        field: f.key,
+        label: f.label,
+        curVal,
+        histVal,
+        curDisplay: f.format ? f.format(curVal) : curVal,
+        histDisplay: f.format ? f.format(histVal) : histVal
+      });
+    }
+  }
+  return changes;
+}
+
 function computeSectionDiff(curSection, histSection) {
   const diff = {
     nameChanged: curSection.name !== histSection.name,
@@ -3672,7 +3793,7 @@ function computeSectionDiff(curSection, histSection) {
     histBpm: histSection.bpm,
     voiceDiff: [],
     gridDiff: [],
-    collabDiff: { added: [], removed: [] },
+    collabDiff: { added: [], removed: [], modified: [] },
     hasDiff: false
   };
 
@@ -3709,36 +3830,64 @@ function computeSectionDiff(curSection, histSection) {
 
   const curNotes = Array.isArray(curSection.collabNotes) ? curSection.collabNotes : [];
   const histNotes = Array.isArray(histSection.collabNotes) ? histSection.collabNotes : [];
-  const curNoteIds = new Set(curNotes.map(n => n.id));
-  const histNoteIds = new Set(histNotes.map(n => n.id));
+  const curNoteMap = new Map(curNotes.map(n => [n.id, n]));
+  const histNoteMap = new Map(histNotes.map(n => [n.id, n]));
+  const allNoteIds = new Set([...curNoteMap.keys(), ...histNoteMap.keys()]);
 
-  diff.collabDiff.added = histNotes.filter(n => !curNoteIds.has(n.id));
-  diff.collabDiff.removed = curNotes.filter(n => !histNoteIds.has(n.id));
+  diff.collabDiff = { added: [], removed: [], modified: [] };
+
+  for (const nid of allNoteIds) {
+    const curN = curNoteMap.get(nid);
+    const histN = histNoteMap.get(nid);
+    if (curN && !histN) {
+      diff.collabDiff.removed.push(curN);
+    } else if (!curN && histN) {
+      diff.collabDiff.added.push(histN);
+    } else if (curN && histN) {
+      const fieldChanges = computeNoteFieldDiff(curN, histN);
+      if (fieldChanges.length > 0) {
+        diff.collabDiff.modified.push({
+          id: nid,
+          curNote: curN,
+          histNote: histN,
+          changes: fieldChanges
+        });
+      }
+    }
+  }
 
   diff.hasDiff = diff.nameChanged || diff.bpmChanged ||
     diff.voiceDiff.length > 0 || diff.gridDiff.length > 0 ||
-    diff.collabDiff.added.length > 0 || diff.collabDiff.removed.length > 0;
+    diff.collabDiff.added.length > 0 || diff.collabDiff.removed.length > 0 ||
+    diff.collabDiff.modified.length > 0;
 
   return diff;
 }
 
+let vcPairMap = {};
+
 function renderVersionCompare(curSections, histSections, histName) {
-  const maxLen = Math.max(curSections.length, histSections.length);
+  vcPairMap = {};
+  const pairs = pairSections(curSections, histSections);
   const diffs = [];
   let totalBpmDiff = 0;
   let totalVoiceDiff = 0;
   let totalGridDiff = 0;
   let totalCollabAdded = 0;
   let totalCollabRemoved = 0;
+  let totalCollabModified = 0;
   let anyDiff = false;
 
-  for (let i = 0; i < maxLen; i++) {
-    const cur = curSections[i] || null;
-    const hist = histSections[i] || null;
+  for (const pair of pairs) {
+    const { cur, hist, pairKey, matchType, status, displayIdx } = pair;
     let diff;
+
     if (!cur && hist) {
       diff = {
         status: "new",
+        matchType,
+        pairKey,
+        displayIdx,
         nameChanged: true,
         curName: "（不存在）",
         histName: hist.name,
@@ -3752,9 +3901,10 @@ function renderVersionCompare(curSections, histSections, histName) {
           histOn: hist.enabledInstruments[idx]
         })),
         gridDiff: [],
-        collabDiff: { added: hist.collabNotes || [], removed: [] },
+        collabDiff: { added: hist.collabNotes || [], removed: [], modified: [] },
         hasDiff: true,
-        histSection: hist
+        histSection: hist,
+        curSection: null
       };
       for (let row = 0; row < instruments.length; row++) {
         for (let step = 0; step < steps; step++) {
@@ -3767,6 +3917,9 @@ function renderVersionCompare(curSections, histSections, histName) {
     } else if (cur && !hist) {
       diff = {
         status: "removed",
+        matchType,
+        pairKey,
+        displayIdx,
         nameChanged: true,
         curName: cur.name,
         histName: "（不存在）",
@@ -3775,22 +3928,28 @@ function renderVersionCompare(curSections, histSections, histName) {
         histBpm: "-",
         voiceDiff: [],
         gridDiff: [],
-        collabDiff: { added: [], removed: cur.collabNotes || [] },
+        collabDiff: { added: [], removed: cur.collabNotes || [], modified: [] },
         hasDiff: false,
-        curSection: cur
+        curSection: cur,
+        histSection: null
       };
     } else {
       diff = computeSectionDiff(cur, hist);
       diff.status = "compare";
+      diff.matchType = matchType;
+      diff.pairKey = pairKey;
+      diff.displayIdx = displayIdx;
       diff.curSection = cur;
       diff.histSection = hist;
     }
     diffs.push(diff);
+    vcPairMap[pairKey] = { curId: cur?.id || null, histId: hist?.id || null };
     if (diff.bpmChanged) totalBpmDiff++;
     if (diff.voiceDiff.length > 0) totalVoiceDiff += diff.voiceDiff.length;
     if (diff.gridDiff.length > 0) totalGridDiff += diff.gridDiff.length;
     if (diff.collabDiff.added.length > 0) totalCollabAdded += diff.collabDiff.added.length;
     if (diff.collabDiff.removed.length > 0) totalCollabRemoved += diff.collabDiff.removed.length;
+    if (diff.collabDiff.modified && diff.collabDiff.modified.length > 0) totalCollabModified += diff.collabDiff.modified.length;
     if (diff.hasDiff || diff.status === "new") anyDiff = true;
   }
 
@@ -3807,8 +3966,8 @@ function renderVersionCompare(curSections, histSections, histName) {
   if (totalGridDiff > 0) {
     tags.push(`<span class="vc-summary-tag diff-grid">口令差异 ${totalGridDiff}处</span>`);
   }
-  if (totalCollabAdded > 0 || totalCollabRemoved > 0) {
-    tags.push(`<span class="vc-summary-tag diff-collab">批注 +${totalCollabAdded} -${totalCollabRemoved}</span>`);
+  if (totalCollabAdded > 0 || totalCollabRemoved > 0 || totalCollabModified > 0) {
+    tags.push(`<span class="vc-summary-tag diff-collab">批注 +${totalCollabAdded} -${totalCollabRemoved} ~${totalCollabModified}</span>`);
   }
   if (!anyDiff) {
     tags.push(`<span class="vc-summary-tag no-diff">完全一致</span>`);
@@ -3822,18 +3981,32 @@ function renderVersionCompare(curSections, histSections, histName) {
     return;
   }
 
+  const matchTypeLabels = { id: "🆔", name: "🏷️", index: "🔢", new: "➕", removed: "➖" };
+  const matchTypeTitles = {
+    id: "按ID精确匹配",
+    name: "按名称匹配",
+    index: "按索引顺序匹配",
+    new: "历史方案多出此段落",
+    removed: "当前多出此段落"
+  };
+
   let html = "";
-  diffs.forEach((diff, idx) => {
-    const sectionId = diff.histSection?.id || diff.curSection?.id || `vc-section-${idx}`;
+  diffs.forEach((diff) => {
+    const pairKey = diff.pairKey;
     const badgeText = diff.status === "new" ? "历史多出" : diff.status === "removed" ? "当前多出" : diff.hasDiff ? "有差异" : "一致";
     const badgeClass = diff.status === "new" ? "new" : diff.status === "removed" ? "removed" : diff.hasDiff ? "" : "same";
     const canRestore = diff.status === "new" || (diff.hasDiff && diff.histSection);
-    const isChecked = vcSelectedSections.has(sectionId);
+    const isChecked = vcSelectedSections.has(pairKey);
+    const matchLabel = matchTypeLabels[diff.matchType] || "";
+    const matchTitle = matchTypeTitles[diff.matchType] || "";
 
-    html += `<div class="vc-diff-section" data-vc-section-id="${sectionId}">`;
+    html += `<div class="vc-diff-section" data-vc-pair="${pairKey}">`;
     html += `<div class="vc-diff-section-header">`;
     html += `<div class="vc-diff-section-title">`;
-    html += `<span>段落 ${idx + 1}</span>`;
+    html += `<span>段落 ${diff.displayIdx}</span>`;
+    if (matchLabel) {
+      html += `<span class="vc-match-badge" title="${matchTitle}">${matchLabel}</span>`;
+    }
     html += `<span class="vc-diff-section-badge ${badgeClass}">${badgeText}</span>`;
     if (diff.nameChanged) {
       html += `<span style="font-size:13px;color:var(--muted);">「${diff.curName}」→「${diff.histName}」</span>`;
@@ -3843,7 +4016,7 @@ function renderVersionCompare(curSections, histSections, histName) {
     html += `</div>`;
     html += `<div class="vc-diff-section-check">`;
     if (canRestore) {
-      html += `<label><input type="checkbox" data-vc-check-section="${sectionId}" ${isChecked ? "checked" : ""}> 恢复此段落</label>`;
+      html += `<label><input type="checkbox" data-vc-check-section="${pairKey}" ${isChecked ? "checked" : ""}> 恢复此段落</label>`;
     }
     html += `</div>`;
     html += `</div>`;
@@ -3912,10 +4085,10 @@ function renderVersionCompare(curSections, histSections, histName) {
         html += `<tr class="beat-select-row"><td class="inst-label" style="font-size:11px;">选择拍</td>`;
         for (let s = 0; s < steps; s++) {
           const isChanged = changedSteps.has(s);
-          const beatKey = `${sectionId}::${s}`;
+          const beatKey = `${pairKey}::${s}`;
           const isBeatSelected = vcSelectedBeats[beatKey] || false;
           if (isChanged) {
-            html += `<td class="beat-header ${isBeatSelected ? "selected" : ""}" data-vc-beat="${sectionId}:${s}" style="cursor:pointer;">✓</td>`;
+            html += `<td class="beat-header ${isBeatSelected ? "selected" : ""}" data-vc-beat="${pairKey}:${s}" style="cursor:pointer;">✓</td>`;
           } else {
             html += `<td class="beat-header same-cell"></td>`;
           }
@@ -3926,24 +4099,66 @@ function renderVersionCompare(curSections, histSections, histName) {
       html += `</table></div></div>`;
     }
 
-    if (diff.collabDiff.added.length > 0 || diff.collabDiff.removed.length > 0) {
+    const collabAdded = diff.collabDiff.added || [];
+    const collabRemoved = diff.collabDiff.removed || [];
+    const collabModified = diff.collabDiff.modified || [];
+    if (collabAdded.length > 0 || collabRemoved.length > 0 || collabModified.length > 0) {
       html += `<div class="vc-diff-item">`;
       html += `<div class="vc-diff-label"><span class="diff-icon changed"></span> 协作批注</div>`;
       html += `<div class="vc-collab-diff">`;
-      diff.collabDiff.added.forEach(n => {
+      collabAdded.forEach(n => {
         html += `<div class="vc-collab-item added">`;
         html += `<span class="collab-diff-badge">历史有</span>`;
         html += `<div class="collab-diff-content">`;
-        html += `<div>${n.content}</div>`;
-        html += `<div class="collab-diff-meta">${n.type === "teacher" ? "老师" : "学生"} · ${n.target === "all" ? "全段" : `第${n.target + 1}小节`}</div>`;
+        html += `<div class="collab-diff-body">${n.content}</div>`;
+        html += `<div class="collab-diff-meta">`;
+        html += `<span class="cm-tag cm-type-${n.type}">${n.type === "teacher" ? "老师" : "学生"}</span>`;
+        html += `<span class="cm-tag cm-target">${n.target === "all" ? "全段" : `第${Number(n.target) + 1}小节`}</span>`;
+        html += `<span class="cm-tag ${n.resolved ? "cm-resolved" : "cm-pending"}">${n.resolved ? "已解决" : "未解决"}</span>`;
+        html += `</div>`;
         html += `</div></div>`;
       });
-      diff.collabDiff.removed.forEach(n => {
+      collabRemoved.forEach(n => {
         html += `<div class="vc-collab-item removed">`;
         html += `<span class="collab-diff-badge">当前有</span>`;
         html += `<div class="collab-diff-content">`;
-        html += `<div>${n.content}</div>`;
-        html += `<div class="collab-diff-meta">${n.type === "teacher" ? "老师" : "学生"} · ${n.target === "all" ? "全段" : `第${n.target + 1}小节`}</div>`;
+        html += `<div class="collab-diff-body">${n.content}</div>`;
+        html += `<div class="collab-diff-meta">`;
+        html += `<span class="cm-tag cm-type-${n.type}">${n.type === "teacher" ? "老师" : "学生"}</span>`;
+        html += `<span class="cm-tag cm-target">${n.target === "all" ? "全段" : `第${Number(n.target) + 1}小节`}</span>`;
+        html += `<span class="cm-tag ${n.resolved ? "cm-resolved" : "cm-pending"}">${n.resolved ? "已解决" : "未解决"}</span>`;
+        html += `</div>`;
+        html += `</div></div>`;
+      });
+      collabModified.forEach(m => {
+        const curNote = m.curNote;
+        const histNote = m.histNote;
+        html += `<div class="vc-collab-item modified">`;
+        html += `<span class="collab-diff-badge">字段修改</span>`;
+        html += `<div class="collab-diff-content">`;
+        const hasContentChange = m.changes.some(c => c.field === "content");
+        if (hasContentChange) {
+          const cc = m.changes.find(c => c.field === "content");
+          html += `<div class="collab-diff-body-row">`;
+          html += `<span class="vc-diff-label-small">内容:</span>`;
+          html += `<span class="vc-diff-val old">${cc.curVal}</span>`;
+          html += `<span class="vc-diff-arrow">→</span>`;
+          html += `<span class="vc-diff-val new">${cc.histVal}</span>`;
+          html += `</div>`;
+        } else {
+          html += `<div class="collab-diff-body">${curNote.content}</div>`;
+        }
+        html += `<div class="collab-field-changes">`;
+        m.changes.filter(c => c.field !== "content").forEach(c => {
+          html += `<div class="collab-field-change">`;
+          html += `<span class="vc-diff-label-small">${c.label}:</span>`;
+          html += `<span class="vc-diff-val old">${c.curDisplay}</span>`;
+          html += `<span class="vc-diff-arrow">→</span>`;
+          html += `<span class="vc-diff-val new">${c.histDisplay}</span>`;
+          html += `</div>`;
+        });
+        html += `</div>`;
+        html += `<div class="collab-diff-meta" style="margin-top:6px;color:var(--muted);">同一条批注（ID匹配）</div>`;
         html += `</div></div>`;
       });
       html += `</div></div>`;
@@ -3999,6 +4214,31 @@ function closeVersionCompare() {
   vcSelectedBeats = {};
 }
 
+function restoreCollabNotes(curSection, histSection) {
+  if (!histSection.collabNotes && !curSection.collabNotes) return;
+  const histNotes = histSection.collabNotes || [];
+  const curNotes = curSection.collabNotes ? [...curSection.collabNotes] : [];
+  const histNoteMap = new Map(histNotes.map(n => [n.id, n]));
+  const curNoteMap = new Map(curNotes.map(n => [n.id, n]));
+  const merged = [];
+  const processedIds = new Set();
+
+  for (const curN of curNotes) {
+    processedIds.add(curN.id);
+    if (histNoteMap.has(curN.id)) {
+      merged.push(deepCloneSection ? { ...histNoteMap.get(curN.id) } : JSON.parse(JSON.stringify(histNoteMap.get(curN.id))));
+    } else {
+      merged.push(curN);
+    }
+  }
+  for (const histN of histNotes) {
+    if (!processedIds.has(histN.id)) {
+      merged.push(JSON.parse(JSON.stringify(histN)));
+    }
+  }
+  curSection.collabNotes = merged;
+}
+
 function restoreFromCompare(restoreAll) {
   if (!vcCompareItem) return;
 
@@ -4022,23 +4262,25 @@ function restoreFromCompare(restoreAll) {
     const selectedBeatInfo = {};
     Object.entries(vcSelectedBeats).forEach(([key, selected]) => {
       if (!selected) return;
-      const [sectionId, stepStr] = key.split("::");
-      if (!selectedBeatInfo[sectionId]) selectedBeatInfo[sectionId] = new Set();
-      selectedBeatInfo[sectionId].add(Number(stepStr));
+      const [pairKey, stepStr] = key.split("::");
+      if (!selectedBeatInfo[pairKey]) selectedBeatInfo[pairKey] = new Set();
+      selectedBeatInfo[pairKey].add(Number(stepStr));
     });
 
-    vcSelectedSections.forEach(sectionId => {
-      const histSection = histSections.find(s => s.id === sectionId);
+    vcSelectedSections.forEach(pairKey => {
+      const pairInfo = vcPairMap[pairKey];
+      if (!pairInfo) return;
+      const histSection = pairInfo.histId ? histSections.find(s => s.id === pairInfo.histId) : null;
       if (!histSection) return;
-      const curSection = state.sections.find(s => s.id === sectionId);
+      const curSection = pairInfo.curId ? state.sections.find(s => s.id === pairInfo.curId) : null;
 
       if (!curSection) {
         state.sections.push(deepCloneSection(histSection));
         return;
       }
 
-      if (selectedBeatInfo[sectionId] && selectedBeatInfo[sectionId].size > 0) {
-        const beatsToRestore = selectedBeatInfo[sectionId];
+      if (selectedBeatInfo[pairKey] && selectedBeatInfo[pairKey].size > 0) {
+        const beatsToRestore = selectedBeatInfo[pairKey];
         for (let row = 0; row < instruments.length; row++) {
           for (const step of beatsToRestore) {
             if (step < steps && histSection.pattern[row] && histSection.pattern[row][step] !== undefined) {
@@ -4049,18 +4291,7 @@ function restoreFromCompare(restoreAll) {
         if (histSection.bpm !== undefined) curSection.bpm = histSection.bpm;
         if (histSection.name) curSection.name = histSection.name;
         if (histSection.enabledInstruments) curSection.enabledInstruments = [...histSection.enabledInstruments];
-
-        if (histSection.collabNotes && histSection.collabNotes.length > 0) {
-          const histNoteIds = new Set(histSection.collabNotes.map(n => n.id));
-          const curNoteIds = new Set((curSection.collabNotes || []).map(n => n.id));
-          const merged = [...(curSection.collabNotes || [])];
-          histSection.collabNotes.forEach(n => {
-            if (!curNoteIds.has(n.id)) {
-              merged.push({ ...n });
-            }
-          });
-          curSection.collabNotes = merged;
-        }
+        restoreCollabNotes(curSection, histSection);
       } else {
         const idx = state.sections.indexOf(curSection);
         if (idx >= 0) {
@@ -4071,14 +4302,15 @@ function restoreFromCompare(restoreAll) {
 
     Object.entries(vcSelectedBeats).forEach(([key, selected]) => {
       if (!selected) return;
-      const [sectionId, stepStr] = key.split("::");
+      const [pairKey, stepStr] = key.split("::");
       const step = Number(stepStr);
-      const histSection = histSections.find(s => s.id === sectionId);
+      if (vcSelectedSections.has(pairKey)) return;
+
+      const pairInfo = vcPairMap[pairKey];
+      if (!pairInfo) return;
+      const histSection = pairInfo.histId ? histSections.find(s => s.id === pairInfo.histId) : null;
       if (!histSection) return;
-
-      if (vcSelectedSections.has(sectionId)) return;
-
-      let curSection = state.sections.find(s => s.id === sectionId);
+      const curSection = pairInfo.curId ? state.sections.find(s => s.id === pairInfo.curId) : null;
       if (!curSection) return;
 
       for (let row = 0; row < instruments.length; row++) {
@@ -4115,14 +4347,16 @@ if (vcBody) {
   vcBody.addEventListener("change", (event) => {
     const checkEl = event.target.closest("[data-vc-check-section]");
     if (checkEl) {
-      const sectionId = checkEl.dataset.vcCheckSection;
+      const pairKey = checkEl.dataset.vcCheckSection;
       if (checkEl.checked) {
-        vcSelectedSections.add(sectionId);
+        vcSelectedSections.add(pairKey);
       } else {
-        vcSelectedSections.delete(sectionId);
+        vcSelectedSections.delete(pairKey);
         Object.keys(vcSelectedBeats).forEach(key => {
-          if (key.startsWith(sectionId + "::")) {
+          if (key.startsWith(pairKey + "::")) {
             delete vcSelectedBeats[key];
+            const beatEl = vcBody.querySelector(`[data-vc-beat="${pairKey}:${key.split("::")[1]}"]`);
+            if (beatEl) beatEl.classList.remove("selected");
           }
         });
       }
@@ -4133,9 +4367,11 @@ if (vcBody) {
   vcBody.addEventListener("click", (event) => {
     const beatEl = event.target.closest("[data-vc-beat]");
     if (beatEl) {
-      const [sectionId, stepStr] = beatEl.dataset.vcBeat.split(":");
-      const step = Number(stepStr);
-      const key = `${sectionId}::${step}`;
+      const raw = beatEl.dataset.vcBeat;
+      const lastColonIdx = raw.lastIndexOf(":");
+      const pairKey = raw.slice(0, lastColonIdx);
+      const step = Number(raw.slice(lastColonIdx + 1));
+      const key = `${pairKey}::${step}`;
       if (vcSelectedBeats[key]) {
         delete vcSelectedBeats[key];
         beatEl.classList.remove("selected");

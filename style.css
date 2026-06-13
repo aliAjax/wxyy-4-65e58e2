@@ -3734,6 +3734,112 @@ select {
 .vc-collab-item .collab-diff-meta {
   font-size: 11px;
   color: var(--muted);
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.vc-collab-item.modified {
+  background: #fef3c7;
+  border-color: #fde68a;
+}
+
+.vc-collab-item.modified .collab-diff-badge {
+  background: var(--gold);
+  color: white;
+}
+
+.collab-diff-body {
+  font-size: 13px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.collab-diff-body-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.vc-diff-label-small {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.collab-field-changes {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.collab-field-change {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.cm-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+.cm-tag.cm-type-teacher {
+  background: var(--accent);
+  color: white;
+}
+
+.cm-tag.cm-type-student {
+  background: var(--active);
+  color: white;
+}
+
+.cm-tag.cm-target {
+  background: #1d4ed8;
+  color: white;
+}
+
+.cm-tag.cm-resolved {
+  background: #047857;
+  color: white;
+}
+
+.cm-tag.cm-pending {
+  background: #b45309;
+  color: white;
+}
+
+.vc-match-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  background: #ede9fe;
+  color: #5b21b6;
+  font-weight: 700;
+  border: 1px solid #ddd6fe;
+  cursor: help;
+}
+
+.vc-diff-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .vc-empty {
