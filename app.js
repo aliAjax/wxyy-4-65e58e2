@@ -957,7 +957,7 @@ savedList.addEventListener("click", (event) => {
   const item = state.saved.find((entry) => entry.id === id);
   if (!item) return;
 
-  if (item.sections && Array.isArray(item.sections)) {
+  if (Array.isArray(item.sections) && item.sections.length > 0) {
     state.pieceName = item.pieceName || item.name;
     state.sections = deepCloneSections(item.sections);
     state.currentSectionId = item.currentSectionId || state.sections[0].id;
