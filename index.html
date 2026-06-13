@@ -40,6 +40,68 @@
       <label>难点批注<input id="noteInput" placeholder="如：第2小节小锣晚半拍"></label>
     </section>
 
+    <section class="tempo-trainer" id="tempoTrainer">
+      <div class="tempo-trainer-header">
+        <h2>⏱️ 节奏变速训练器</h2>
+        <label class="tempo-toggle">
+          <input type="checkbox" id="tempoTrainerToggle">
+          <span>启用变速训练</span>
+        </label>
+      </div>
+      <div class="tempo-trainer-body">
+        <div class="tempo-setup">
+          <div class="tempo-setup-row">
+            <label>起始BPM
+              <input id="tempoStartBpm" type="number" min="40" max="220" value="72">
+            </label>
+            <label>结束BPM
+              <input id="tempoEndBpm" type="number" min="40" max="220" value="120">
+            </label>
+            <label>步进BPM
+              <input id="tempoStepBpm" type="number" min="1" max="40" value="8">
+            </label>
+            <label>每速度轮数
+              <input id="tempoRoundsPerBpm" type="number" min="1" max="10" value="2">
+            </label>
+            <label>轮间停顿(ms)
+              <input id="tempoPauseMs" type="number" min="200" max="5000" value="1000">
+            </label>
+          </div>
+          <div class="tempo-setup-actions">
+            <button type="button" id="tempoGenerateBtn" class="tempo-generate-btn">🎯 生成BPM阶梯</button>
+            <button type="button" id="tempoResetBtn" class="tempo-reset-btn">↺ 重置</button>
+          </div>
+          <div class="tempo-steps-preview" id="tempoStepsPreview"></div>
+        </div>
+        <div class="tempo-status" id="tempoStatus" style="display: none;">
+          <div class="tempo-status-grid">
+            <div class="tempo-status-item">
+              <span class="tempo-status-label">训练状态</span>
+              <span class="tempo-status-value" id="tempoStateValue">准备就绪</span>
+            </div>
+            <div class="tempo-status-item">
+              <span class="tempo-status-label">当前轮次</span>
+              <span class="tempo-status-value" id="tempoRoundValue">0 / 0</span>
+            </div>
+            <div class="tempo-status-item">
+              <span class="tempo-status-label">当前速度</span>
+              <span class="tempo-status-value" id="tempoBpmValue">0 BPM</span>
+            </div>
+            <div class="tempo-status-item">
+              <span class="tempo-status-label">剩余拍点</span>
+              <span class="tempo-status-value" id="tempoBeatsValue">0</span>
+            </div>
+          </div>
+          <div class="tempo-progress">
+            <div class="tempo-progress-bar">
+              <div class="tempo-progress-fill" id="tempoProgressFill"></div>
+            </div>
+            <div class="tempo-progress-text" id="tempoProgressText">0%</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="command-import" id="commandImport">
       <div class="import-header">
         <h2>口令输入转网格</h2>

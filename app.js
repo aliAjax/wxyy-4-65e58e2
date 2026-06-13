@@ -251,6 +251,25 @@ let diagnosisPaused = false;
 let diagnosisStartTime = null;
 let lastDiagnosisResult = null;
 
+let tempoTrainer = {
+  active: false,
+  enabled: false,
+  currentRound: 0,
+  totalRounds: 0,
+  bpmSteps: [],
+  roundsPerBpm: 2,
+  pauseBetweenRounds: 1000,
+  beatsRemaining: 0,
+  totalBeatsPerRound: 0,
+  pausing: false,
+  pauseTimer: null,
+  completed: false,
+  originalBpm: 96,
+  originalLoop: "",
+  currentBpmIndex: 0,
+  currentSubRound: 0
+};
+
 const grid = document.querySelector("#grid");
 const savedList = document.querySelector("#savedList");
 const structure = document.querySelector("#structure");
@@ -299,6 +318,24 @@ const schemeCompatibility = document.querySelector("#schemeCompatibility");
 const compatibilityList = document.querySelector("#compatibilityList");
 const schemeConfirmBtn = document.querySelector("#schemeConfirmBtn");
 const schemeCancelBtn = document.querySelector("#schemeCancelBtn");
+
+const tempoTrainerSection = document.querySelector("#tempoTrainer");
+const tempoTrainerToggle = document.querySelector("#tempoTrainerToggle");
+const tempoStartBpm = document.querySelector("#tempoStartBpm");
+const tempoEndBpm = document.querySelector("#tempoEndBpm");
+const tempoStepBpm = document.querySelector("#tempoStepBpm");
+const tempoRoundsPerBpm = document.querySelector("#tempoRoundsPerBpm");
+const tempoPauseMs = document.querySelector("#tempoPauseMs");
+const tempoGenerateBtn = document.querySelector("#tempoGenerateBtn");
+const tempoResetBtn = document.querySelector("#tempoResetBtn");
+const tempoStepsPreview = document.querySelector("#tempoStepsPreview");
+const tempoStatus = document.querySelector("#tempoStatus");
+const tempoStateValue = document.querySelector("#tempoStateValue");
+const tempoRoundValue = document.querySelector("#tempoRoundValue");
+const tempoBpmValue = document.querySelector("#tempoBpmValue");
+const tempoBeatsValue = document.querySelector("#tempoBeatsValue");
+const tempoProgressFill = document.querySelector("#tempoProgressFill");
+const tempoProgressText = document.querySelector("#tempoProgressText");
 
 const SCHEMA_VERSION = 2;
 const SUPPORTED_VERSIONS = [1, 2];
@@ -743,6 +780,12 @@ function render() {
   renderSidebars();
   renderDashboard();
   renderRehearsalTimeline();
+  if (tempoTrainerSection && tempoTrainerSection.classList.contains('disabled') === false && !tempoTrainer.enabled) {
+    tempoTrainerSection.classList.add('disabled');
+  }
+  if (tempoStepsPreview && tempoTrainer.bpmSteps.length === 0) {
+    renderTempoStepsPreview();
+  }
 }
 
 const canonicalMap = {
@@ -1028,6 +1071,10 @@ function getValidPlayhead(section, position) {
 }
 
 function tick() {
+  if (tempoTrainer.active) {
+    return;
+  }
+
   const section = getPlaySection();
   if (!section) return;
 
@@ -1081,6 +1128,16 @@ function tick() {
 function startPlayback() {
   if (diagnosisActive) {
     alert("诊断练习进行中，请先结束诊断练习再使用普通播放。");
+    return;
+  }
+
+  if (tempoTrainer.enabled && tempoTrainer.bpmSteps.length > 0) {
+    startTempoTrainer();
+    return;
+  }
+
+  if (tempoTrainer.active) {
+    alert("变速训练进行中，请先停止训练。");
     return;
   }
 
@@ -1157,6 +1214,11 @@ function startPlayback() {
 function stopPlayback() {
   if (diagnosisActive) return;
 
+  if (tempoTrainer.active) {
+    stopTempoTrainer();
+    return;
+  }
+
   clearInterval(timer);
   timer = null;
   document.querySelectorAll(".cell.playing").forEach((cell) => cell.classList.remove("playing"));
@@ -1226,8 +1288,16 @@ pieceName.addEventListener("input", () => {
 bpmInput.addEventListener("input", () => {
   const section = getCurrentSection();
   if (!section) return;
-  section.bpm = Number(bpmInput.value || 96);
+  const newBpm = Number(bpmInput.value || 96);
+  section.bpm = newBpm;
   save();
+
+  if (tempoTrainer.active && timer && !tempoTrainer.pausing) {
+    clearInterval(timer);
+    timer = setInterval(tempoTrainerTick, 60000 / newBpm);
+    return;
+  }
+
   if (timer && !state.continuousPlay) {
     clearInterval(timer);
     timer = setInterval(tick, 60000 / section.bpm);
@@ -1239,6 +1309,11 @@ bpmInput.addEventListener("input", () => {
 });
 
 loopSelect.addEventListener("change", () => {
+  if (tempoTrainer.active) {
+    loopSelect.value = tempoTrainer.originalLoop;
+    alert("变速训练进行中，无法修改循环小节。请先停止训练。");
+    return;
+  }
   const section = getCurrentSection();
   if (!section) return;
   section.loop = loopSelect.value;
@@ -1279,6 +1354,13 @@ savedList.addEventListener("click", (event) => {
   const id = event.target.closest("[data-load]")?.dataset.load;
   const item = state.saved.find((entry) => entry.id === id);
   if (!item) return;
+
+  if (tempoTrainer.active) {
+    if (!confirm("变速训练进行中，加载方案将停止训练，确定继续吗？")) {
+      return;
+    }
+    stopTempoTrainer();
+  }
 
   if (Array.isArray(item.sections) && item.sections.length > 0) {
     state.pieceName = item.pieceName || item.name;
@@ -1421,6 +1503,12 @@ sectionsList.addEventListener("click", (event) => {
   }
 
   if (sectionItem && !event.target.closest(".section-item-btns")) {
+    if (tempoTrainer.active) {
+      if (!confirm("变速训练进行中，切换段落将停止训练，确定继续吗？")) {
+        return;
+      }
+      stopTempoTrainer();
+    }
     const id = sectionItem.dataset.sectionId;
     state.currentSectionId = id;
     playhead = 0;
@@ -1475,12 +1563,35 @@ addSectionBtn.addEventListener("click", () => {
 });
 
 continuousPlayCheckbox.addEventListener("change", () => {
+  if (tempoTrainer.active) {
+    continuousPlayCheckbox.checked = state.continuousPlay;
+    alert("变速训练进行中，无法切换连续播放。请先停止训练。");
+    return;
+  }
   state.continuousPlay = continuousPlayCheckbox.checked;
   if (timer) {
     stopPlayback();
   }
   save();
   renderDashboard();
+});
+
+tempoTrainerToggle.addEventListener("change", toggleTempoTrainer);
+
+tempoGenerateBtn.addEventListener("click", generateBpmSteps);
+
+tempoResetBtn.addEventListener("click", resetTempoTrainer);
+
+[tempoStartBpm, tempoEndBpm, tempoStepBpm, tempoRoundsPerBpm, tempoPauseMs].forEach(input => {
+  input.addEventListener("input", () => {
+    if (!tempoTrainer.active) {
+      tempoGenerateBtn.disabled = false;
+      tempoGenerateBtn.textContent = '🎯 生成BPM阶梯';
+      tempoTrainer.bpmSteps = [];
+      renderTempoStepsPreview();
+      updatePlayButtonsState();
+    }
+  });
 });
 
 rehearsalTimelineBody.addEventListener("click", (event) => {
@@ -1933,6 +2044,10 @@ function applySchemeImport() {
           stopPlayback();
         }
 
+        if (tempoTrainer.active) {
+          stopTempoTrainer();
+        }
+
         state.pieceName = parsedSchemeData.pieceName || "导入的方案";
         state.sections = deepCloneSections(parsedSchemeData.sections);
         state.currentSectionId = parsedSchemeData.currentSectionId || state.sections[0]?.id;
@@ -2029,11 +2144,395 @@ function updatePlayButtonsState() {
   const playBtn = document.querySelector("#playBtn");
   const stopBtn = document.querySelector("#stopBtn");
   if (playBtn) {
-    playBtn.disabled = diagnosisActive;
-    playBtn.title = diagnosisActive ? "诊断练习进行中" : "";
+    if (tempoTrainer.active) {
+      playBtn.textContent = "训练中...";
+      playBtn.disabled = true;
+      playBtn.title = "变速训练进行中，请使用训练器控制";
+    } else if (tempoTrainer.enabled && tempoTrainer.bpmSteps.length > 0) {
+      playBtn.textContent = "开始训练";
+      playBtn.disabled = diagnosisActive;
+      playBtn.title = diagnosisActive ? "诊断练习进行中" : "点击开始变速训练";
+    } else {
+      playBtn.textContent = "播放";
+      playBtn.disabled = diagnosisActive;
+      playBtn.title = diagnosisActive ? "诊断练习进行中" : "";
+    }
   }
   if (stopBtn) {
+    if (tempoTrainer.active) {
+      stopBtn.textContent = "停止训练";
+    } else {
+      stopBtn.textContent = "停止";
+    }
     stopBtn.disabled = diagnosisActive;
+  }
+}
+
+function generateBpmSteps() {
+  const start = Number(tempoStartBpm.value);
+  const end = Number(tempoEndBpm.value);
+  const step = Number(tempoStepBpm.value);
+  const roundsPerBpm = Number(tempoRoundsPerBpm.value);
+  const pauseMs = Number(tempoPauseMs.value);
+
+  if (start <= 0 || end <= 0 || step <= 0) {
+    alert("请输入有效的BPM数值");
+    return;
+  }
+
+  if (start > end) {
+    alert("起始BPM不能大于结束BPM");
+    return;
+  }
+
+  const steps = [];
+  for (let bpm = start; bpm <= end; bpm += step) {
+    steps.push(bpm);
+  }
+
+  if (steps.length === 0) {
+    alert("无法生成有效的BPM阶梯");
+    return;
+  }
+
+  if (steps[steps.length - 1] !== end && (end - steps[steps.length - 1]) < step) {
+    steps.push(end);
+  }
+
+  tempoTrainer.bpmSteps = steps;
+  tempoTrainer.roundsPerBpm = roundsPerBpm;
+  tempoTrainer.pauseBetweenRounds = pauseMs;
+  tempoTrainer.totalRounds = steps.length * roundsPerBpm;
+
+  renderTempoStepsPreview();
+  tempoGenerateBtn.textContent = `✓ 已生成 ${steps.length} 个速度，共 ${tempoTrainer.totalRounds} 轮`;
+  tempoGenerateBtn.disabled = true;
+  updatePlayButtonsState();
+}
+
+function renderTempoStepsPreview() {
+  if (tempoTrainer.bpmSteps.length === 0) {
+    tempoStepsPreview.innerHTML = '<span style="color: var(--muted); font-size: 13px;">点击"生成BPM阶梯"按钮预览训练计划</span>';
+    return;
+  }
+
+  const html = tempoTrainer.bpmSteps.map((bpm, index) => {
+    const statusClass = index < tempoTrainer.currentBpmIndex ? 'completed' :
+                       (index === tempoTrainer.currentBpmIndex && tempoTrainer.active ? 'active' : '');
+    return `<span class="tempo-step-badge ${statusClass}" data-bpm-index="${index}">
+              ${bpm} BPM
+              <span class="step-rounds">×${tempoTrainer.roundsPerBpm}</span>
+            </span>`;
+  }).join('');
+
+  tempoStepsPreview.innerHTML = html;
+}
+
+function updateTempoStatusDisplay() {
+  const totalRounds = tempoTrainer.totalRounds;
+  const currentRound = tempoTrainer.currentRound;
+  const currentBpm = tempoTrainer.bpmSteps[tempoTrainer.currentBpmIndex] || 0;
+  const beatsRemaining = tempoTrainer.beatsRemaining;
+  const progress = totalRounds > 0 ? Math.round((currentRound / totalRounds) * 100) : 0;
+
+  tempoRoundValue.textContent = `${currentRound} / ${totalRounds}`;
+  tempoBpmValue.textContent = `${currentBpm} BPM`;
+  tempoBeatsValue.textContent = beatsRemaining;
+
+  tempoProgressFill.style.width = `${progress}%`;
+  tempoProgressText.textContent = `${progress}%`;
+
+  tempoStateValue.textContent = tempoTrainer.completed ? '训练完成' :
+                                 tempoTrainer.pausing ? '轮间停顿' :
+                                 tempoTrainer.active ? '训练进行中' : '准备就绪';
+
+  tempoStateValue.className = 'tempo-status-value ' +
+    (tempoTrainer.completed ? 'completed' :
+     tempoTrainer.pausing ? 'pausing' : '');
+
+  renderTempoStepsPreview();
+}
+
+function getTempoTrainerRange(section) {
+  const sec = section || getCurrentSection();
+  if (!sec) return [0, steps - 1];
+  if (tempoTrainer.originalLoop === "") return [0, steps - 1];
+  const start = Number(tempoTrainer.originalLoop) * 4;
+  return [start, start + 3];
+}
+
+function getTempoTrainerBeatsPerRound() {
+  const [start, end] = getTempoTrainerRange();
+  return end - start + 1;
+}
+
+function startTempoTrainer() {
+  if (tempoTrainer.active) {
+    alert("变速训练已经在进行中。");
+    return;
+  }
+
+  if (diagnosisActive) {
+    alert("诊断练习进行中，请先结束诊断练习。");
+    return;
+  }
+
+  if (tempoTrainer.bpmSteps.length === 0) {
+    alert("请先生成BPM阶梯。");
+    return;
+  }
+
+  const section = getCurrentSection();
+  if (!section) return;
+
+  if (tempoTrainer.pauseTimer) {
+    clearTimeout(tempoTrainer.pauseTimer);
+    tempoTrainer.pauseTimer = null;
+  }
+
+  tempoTrainer.originalBpm = section.bpm;
+  tempoTrainer.originalLoop = section.loop;
+  tempoTrainer.active = true;
+  tempoTrainer.completed = false;
+  tempoTrainer.currentRound = 0;
+  tempoTrainer.currentBpmIndex = 0;
+  tempoTrainer.currentSubRound = 0;
+  tempoTrainer.pausing = false;
+  tempoTrainer.totalBeatsPerRound = getTempoTrainerBeatsPerRound();
+  tempoTrainer.beatsRemaining = tempoTrainer.totalBeatsPerRound;
+
+  section.bpm = tempoTrainer.bpmSteps[0];
+  bpmInput.value = section.bpm;
+
+  if (timer) clearInterval(timer);
+
+  const [start, end] = getTempoTrainerRange(section);
+  playhead = start;
+
+  state.playCount = (state.playCount || 0) + 1;
+  state.lastPlayedAt = new Date().toISOString();
+  state.recentPlayedSection = `变速训练: ${tempoTrainer.bpmSteps[0]}-${tempoTrainer.bpmSteps[tempoTrainer.bpmSteps.length - 1]}BPM`;
+
+  save();
+
+  tempoStatus.style.display = "block";
+  tempoTrainerSection.querySelector('.tempo-setup').classList.add('disabled');
+  tempoTrainerToggle.disabled = true;
+  loopSelect.disabled = true;
+
+  updateTempoStatusDisplay();
+  updatePlayButtonsState();
+
+  currentRehearsalId = crypto.randomUUID();
+  currentRehearsalStartTime = Date.now();
+  const activeVoices = instruments
+    .filter((_, idx) => section.enabledInstruments[idx])
+    .map((i) => i.name);
+  const loopLabel = tempoTrainer.originalLoop === "" ? "全段" : `第${Number(tempoTrainer.originalLoop) + 1}小节`;
+  rehearsalLog.unshift({
+    id: currentRehearsalId,
+    timestamp: new Date().toISOString(),
+    sectionId: section.id,
+    sectionName: section.name,
+    pieceName: state.pieceName,
+    bpm: section.bpm,
+    loop: tempoTrainer.originalLoop,
+    loopLabel,
+    enabledInstruments: [...section.enabledInstruments],
+    activeVoices,
+    pausePosition: null,
+    pauseLabel: "变速训练中…",
+    durationMs: null,
+    snapshot: {
+      sections: deepCloneSections(state.sections),
+      currentSectionId: state.currentSectionId,
+      pieceName: state.pieceName,
+      continuousPlay: state.continuousPlay
+    }
+  });
+  if (rehearsalLog.length > MAX_REHEARSAL_LOG) {
+    rehearsalLog = rehearsalLog.slice(0, MAX_REHEARSAL_LOG);
+  }
+  saveRehearsalLog();
+
+  renderDashboard();
+  renderRehearsalTimeline();
+
+  tempoTrainerTick();
+  timer = setInterval(tempoTrainerTick, 60000 / section.bpm);
+}
+
+function tempoTrainerTick() {
+  const section = getCurrentSection();
+  if (!section) return;
+
+  const [start, end] = getTempoTrainerRange(section);
+  if (playhead < start || playhead > end) playhead = start;
+
+  highlight(playhead);
+  instruments.forEach((instrument, rowIndex) => {
+    if (section.enabledInstruments[rowIndex] && section.pattern[rowIndex][playhead]) {
+      playSound(instrument);
+    }
+  });
+
+  tempoTrainer.beatsRemaining--;
+  updateTempoStatusDisplay();
+
+  if (playhead >= end) {
+    tempoTrainer.currentSubRound++;
+
+    if (tempoTrainer.currentSubRound >= tempoTrainer.roundsPerBpm) {
+      tempoTrainer.currentBpmIndex++;
+      tempoTrainer.currentSubRound = 0;
+
+      if (tempoTrainer.currentBpmIndex >= tempoTrainer.bpmSteps.length) {
+        finishTempoTrainer();
+        return;
+      }
+
+      const nextBpm = tempoTrainer.bpmSteps[tempoTrainer.currentBpmIndex];
+      section.bpm = nextBpm;
+      bpmInput.value = nextBpm;
+      save();
+    }
+
+    tempoTrainer.currentRound++;
+    tempoTrainer.beatsRemaining = tempoTrainer.totalBeatsPerRound;
+
+    if (tempoTrainer.pauseBetweenRounds > 0) {
+      clearInterval(timer);
+      timer = null;
+      tempoTrainer.pausing = true;
+      updateTempoStatusDisplay();
+
+      tempoTrainer.pauseTimer = setTimeout(() => {
+        tempoTrainer.pausing = false;
+        playhead = start;
+        updateTempoStatusDisplay();
+        timer = setInterval(tempoTrainerTick, 60000 / section.bpm);
+        tempoTrainerTick();
+      }, tempoTrainer.pauseBetweenRounds);
+      return;
+    }
+
+    playhead = start;
+  } else {
+    playhead = playhead + 1;
+  }
+}
+
+function stopTempoTrainer() {
+  if (!tempoTrainer.active) return;
+
+  if (tempoTrainer.pauseTimer) {
+    clearTimeout(tempoTrainer.pauseTimer);
+    tempoTrainer.pauseTimer = null;
+  }
+
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+
+  document.querySelectorAll(".cell.playing").forEach((cell) => cell.classList.remove("playing"));
+
+  const section = getCurrentSection();
+  if (section) {
+    section.bpm = tempoTrainer.originalBpm;
+    section.loop = tempoTrainer.originalLoop;
+    bpmInput.value = section.bpm;
+    loopSelect.value = section.loop;
+    save();
+  }
+
+  if (currentRehearsalId) {
+    const entry = rehearsalLog.find((r) => r.id === currentRehearsalId);
+    if (entry) {
+      entry.durationMs = currentRehearsalStartTime ? Date.now() - currentRehearsalStartTime : null;
+      entry.pausePosition = null;
+      entry.pauseLabel = tempoTrainer.completed ? "变速训练完成" : "变速训练已停止";
+      if (entry.snapshot) {
+        entry.snapshot.currentSectionId = state.currentSectionId;
+      }
+      saveRehearsalLog();
+    }
+    currentRehearsalId = null;
+    currentRehearsalStartTime = null;
+  }
+
+  tempoTrainer.active = false;
+  tempoTrainer.pausing = false;
+
+  tempoStatus.style.display = "none";
+  tempoTrainerSection.querySelector('.tempo-setup').classList.remove('disabled');
+  tempoTrainerToggle.disabled = false;
+  loopSelect.disabled = false;
+  tempoGenerateBtn.disabled = false;
+  tempoGenerateBtn.textContent = '🎯 生成BPM阶梯';
+
+  playhead = 0;
+
+  updateTempoStatusDisplay();
+  updatePlayButtonsState();
+  renderDashboard();
+  renderRehearsalTimeline();
+  render();
+}
+
+function finishTempoTrainer() {
+  tempoTrainer.completed = true;
+  updateTempoStatusDisplay();
+  stopTempoTrainer();
+  alert("🎉 恭喜！变速训练已完成！");
+}
+
+function resetTempoTrainer() {
+  if (tempoTrainer.active) {
+    stopTempoTrainer();
+  }
+
+  tempoTrainer.bpmSteps = [];
+  tempoTrainer.currentRound = 0;
+  tempoTrainer.totalRounds = 0;
+  tempoTrainer.currentBpmIndex = 0;
+  tempoTrainer.currentSubRound = 0;
+  tempoTrainer.completed = false;
+  tempoTrainer.beatsRemaining = 0;
+
+  tempoGenerateBtn.disabled = false;
+  tempoGenerateBtn.textContent = '🎯 生成BPM阶梯';
+  renderTempoStepsPreview();
+  updatePlayButtonsState();
+}
+
+function toggleTempoTrainer() {
+  const enabled = tempoTrainerToggle.checked;
+  tempoTrainer.enabled = enabled;
+
+  if (enabled) {
+    if (diagnosisActive) {
+      alert("诊断练习进行中，请先结束诊断练习。");
+      tempoTrainerToggle.checked = false;
+      tempoTrainer.enabled = false;
+      return;
+    }
+    tempoTrainerSection.classList.remove('disabled');
+    tempoStatus.style.display = "none";
+    renderTempoStepsPreview();
+    updatePlayButtonsState();
+  } else {
+    if (tempoTrainer.active) {
+      if (!confirm("变速训练正在进行中，确定要关闭吗？")) {
+        tempoTrainerToggle.checked = true;
+        tempoTrainer.enabled = true;
+        return;
+      }
+      stopTempoTrainer();
+    }
+    tempoTrainerSection.classList.add('disabled');
+    tempoStatus.style.display = "none";
+    updatePlayButtonsState();
   }
 }
 
@@ -2382,6 +2881,11 @@ function diagnosisTick() {
 }
 
 function startDiagnosis() {
+  if (tempoTrainer.enabled || tempoTrainer.active) {
+    alert("变速训练已启用，请先关闭变速训练再使用诊断模式。");
+    return;
+  }
+
   const section = getCurrentSection();
   if (!section) {
     alert("请先选择一个段落。");
@@ -2589,6 +3093,11 @@ function showLastDiagnosisResult() {
 }
 
 function toggleDiagnosisMode() {
+  if (!diagnosisMode && tempoTrainer.enabled) {
+    alert("变速训练已启用，请先关闭变速训练再使用诊断模式。");
+    return;
+  }
+
   diagnosisMode = !diagnosisMode;
 
   if (diagnosisMode) {
