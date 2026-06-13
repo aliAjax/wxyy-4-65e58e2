@@ -473,6 +473,40 @@
       </aside>
     </section>
   </main>
+
+  <div class="version-compare-overlay" id="versionCompareOverlay" style="display:none;">
+    <div class="version-compare-modal">
+      <div class="vc-header">
+        <div>
+          <h2>📋 版本对比与局部恢复</h2>
+          <p class="vc-subtitle" id="vcSubtitle">对比历史方案与当前编辑谱面的差异</p>
+        </div>
+        <button type="button" class="vc-close-btn" id="vcCloseBtn">✕</button>
+      </div>
+      <div class="vc-help">
+        <div class="vc-help-item">
+          <span class="vc-help-icon">📑</span>
+          <span>勾选<strong>"恢复此段落"</strong>可恢复整个段落（含BPM、声部、网格、批注）</span>
+        </div>
+        <div class="vc-help-item">
+          <span class="vc-help-icon">🎯</span>
+          <span>点击<strong>网格底部 ✓ 标记</strong>可仅恢复选中的某几拍（仅恢复口令内容）</span>
+        </div>
+        <div class="vc-help-item">
+          <span class="vc-help-icon">🔄</span>
+          <span><strong>"整份覆盖恢复"</strong>将用历史方案完全替换当前谱面</span>
+        </div>
+      </div>
+      <div class="vc-summary" id="vcSummary"></div>
+      <div class="vc-body" id="vcBody"></div>
+      <div class="vc-footer">
+        <button type="button" class="vc-restore-selected-btn" id="vcRestoreSelectedBtn" disabled>↺ 恢复选中项</button>
+        <button type="button" class="vc-restore-all-btn" id="vcRestoreAllBtn">🔄 整份覆盖恢复</button>
+        <button type="button" class="vc-cancel-btn" id="vcCancelBtn">取消</button>
+      </div>
+    </div>
+  </div>
+
   <script src="./app.js"></script>
 </body>
 </html>

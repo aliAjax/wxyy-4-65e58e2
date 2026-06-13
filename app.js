@@ -812,10 +812,16 @@ function renderSidebars() {
   savedList.innerHTML = state.saved.length ? state.saved.map((item) => {
     const sectionCount = item.sectionCount || (item.sections ? item.sections.length : 1);
     const bpm = item.bpm || (item.sections && item.sections[0]?.bpm) || 96;
+    const dateStr = item.createdAt ? new Date(item.createdAt).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
     return `
-    <button class="saved-item" type="button" data-load="${item.id}">
-      <strong>${item.name}</strong><br><span>${sectionCount}个段落 · ${bpm}BPM</span>
-    </button>
+    <div class="saved-item">
+      <strong>${item.name}</strong><br><span>${sectionCount}个段落 · ${bpm}BPM${dateStr ? " · " + dateStr : ""}</span>
+      <div class="saved-item-actions">
+        <button type="button" class="saved-action-btn compare-btn" data-compare="${item.id}">对比</button>
+        <button type="button" class="saved-action-btn load-btn" data-load="${item.id}">加载</button>
+        <button type="button" class="saved-action-btn delete-btn" data-delete-saved="${item.id}">删除</button>
+      </div>
+    </div>
   `;
   }).join("") : "<p>还没有保存方案。</p>";
 }
@@ -1672,6 +1678,22 @@ document.querySelector("#saveBtn").addEventListener("click", () => {
 });
 
 savedList.addEventListener("click", (event) => {
+  const compareId = event.target.closest("[data-compare]")?.dataset.compare;
+  if (compareId) {
+    const item = state.saved.find((entry) => entry.id === compareId);
+    if (item) openVersionCompare(item);
+    return;
+  }
+
+  const deleteId = event.target.closest("[data-delete-saved]")?.dataset.deleteSaved;
+  if (deleteId) {
+    if (!confirm("确定删除此方案？")) return;
+    state.saved = state.saved.filter((entry) => entry.id !== deleteId);
+    save();
+    render();
+    return;
+  }
+
   const id = event.target.closest("[data-load]")?.dataset.load;
   const item = state.saved.find((entry) => entry.id === id);
   if (!item) return;
@@ -3610,6 +3632,521 @@ if (collabNotesList) {
 }
 
 render();
+
+const vcOverlay = document.querySelector("#versionCompareOverlay");
+const vcSubtitle = document.querySelector("#vcSubtitle");
+const vcSummary = document.querySelector("#vcSummary");
+const vcBody = document.querySelector("#vcBody");
+const vcCloseBtn = document.querySelector("#vcCloseBtn");
+const vcRestoreSelectedBtn = document.querySelector("#vcRestoreSelectedBtn");
+const vcRestoreAllBtn = document.querySelector("#vcRestoreAllBtn");
+const vcCancelBtn = document.querySelector("#vcCancelBtn");
+
+let vcCompareItem = null;
+let vcSelectedSections = new Set();
+let vcSelectedBeats = {};
+
+function normalizeSavedToSections(item) {
+  if (Array.isArray(item.sections) && item.sections.length > 0) {
+    return deepCloneSections(item.sections);
+  }
+  const section = deepCloneSection({
+    id: crypto.randomUUID(),
+    name: item.name || "未命名",
+    bpm: item.bpm || 96,
+    loop: item.loop || "",
+    notes: item.notes || [],
+    pattern: item.pattern,
+    enabledInstruments: item.enabledInstruments
+  });
+  return [section];
+}
+
+function computeSectionDiff(curSection, histSection) {
+  const diff = {
+    nameChanged: curSection.name !== histSection.name,
+    curName: curSection.name,
+    histName: histSection.name,
+    bpmChanged: curSection.bpm !== histSection.bpm,
+    curBpm: curSection.bpm,
+    histBpm: histSection.bpm,
+    voiceDiff: [],
+    gridDiff: [],
+    collabDiff: { added: [], removed: [] },
+    hasDiff: false
+  };
+
+  for (let i = 0; i < instruments.length; i++) {
+    const curOn = curSection.enabledInstruments[i];
+    const histOn = histSection.enabledInstruments[i];
+    if (curOn !== histOn) {
+      diff.voiceDiff.push({
+        index: i,
+        name: instruments[i].name,
+        curOn,
+        histOn
+      });
+    }
+  }
+
+  const curPattern = curSection.pattern;
+  const histPattern = histSection.pattern;
+  for (let row = 0; row < instruments.length; row++) {
+    for (let step = 0; step < steps; step++) {
+      const curVal = (curPattern[row] && curPattern[row][step]) || "";
+      const histVal = (histPattern[row] && histPattern[row][step]) || "";
+      if (curVal !== histVal) {
+        diff.gridDiff.push({
+          row,
+          step,
+          instrument: instruments[row].name,
+          curVal,
+          histVal
+        });
+      }
+    }
+  }
+
+  const curNotes = Array.isArray(curSection.collabNotes) ? curSection.collabNotes : [];
+  const histNotes = Array.isArray(histSection.collabNotes) ? histSection.collabNotes : [];
+  const curNoteIds = new Set(curNotes.map(n => n.id));
+  const histNoteIds = new Set(histNotes.map(n => n.id));
+
+  diff.collabDiff.added = histNotes.filter(n => !curNoteIds.has(n.id));
+  diff.collabDiff.removed = curNotes.filter(n => !histNoteIds.has(n.id));
+
+  diff.hasDiff = diff.nameChanged || diff.bpmChanged ||
+    diff.voiceDiff.length > 0 || diff.gridDiff.length > 0 ||
+    diff.collabDiff.added.length > 0 || diff.collabDiff.removed.length > 0;
+
+  return diff;
+}
+
+function renderVersionCompare(curSections, histSections, histName) {
+  const maxLen = Math.max(curSections.length, histSections.length);
+  const diffs = [];
+  let totalBpmDiff = 0;
+  let totalVoiceDiff = 0;
+  let totalGridDiff = 0;
+  let totalCollabAdded = 0;
+  let totalCollabRemoved = 0;
+  let anyDiff = false;
+
+  for (let i = 0; i < maxLen; i++) {
+    const cur = curSections[i] || null;
+    const hist = histSections[i] || null;
+    let diff;
+    if (!cur && hist) {
+      diff = {
+        status: "new",
+        nameChanged: true,
+        curName: "（不存在）",
+        histName: hist.name,
+        bpmChanged: true,
+        curBpm: "-",
+        histBpm: hist.bpm,
+        voiceDiff: instruments.map((inst, idx) => ({
+          index: idx,
+          name: inst.name,
+          curOn: null,
+          histOn: hist.enabledInstruments[idx]
+        })),
+        gridDiff: [],
+        collabDiff: { added: hist.collabNotes || [], removed: [] },
+        hasDiff: true,
+        histSection: hist
+      };
+      for (let row = 0; row < instruments.length; row++) {
+        for (let step = 0; step < steps; step++) {
+          const val = (hist.pattern[row] && hist.pattern[row][step]) || "";
+          if (val) {
+            diff.gridDiff.push({ row, step, instrument: instruments[row].name, curVal: "", histVal: val });
+          }
+        }
+      }
+    } else if (cur && !hist) {
+      diff = {
+        status: "removed",
+        nameChanged: true,
+        curName: cur.name,
+        histName: "（不存在）",
+        bpmChanged: true,
+        curBpm: cur.bpm,
+        histBpm: "-",
+        voiceDiff: [],
+        gridDiff: [],
+        collabDiff: { added: [], removed: cur.collabNotes || [] },
+        hasDiff: false,
+        curSection: cur
+      };
+    } else {
+      diff = computeSectionDiff(cur, hist);
+      diff.status = "compare";
+      diff.curSection = cur;
+      diff.histSection = hist;
+    }
+    diffs.push(diff);
+    if (diff.bpmChanged) totalBpmDiff++;
+    if (diff.voiceDiff.length > 0) totalVoiceDiff += diff.voiceDiff.length;
+    if (diff.gridDiff.length > 0) totalGridDiff += diff.gridDiff.length;
+    if (diff.collabDiff.added.length > 0) totalCollabAdded += diff.collabDiff.added.length;
+    if (diff.collabDiff.removed.length > 0) totalCollabRemoved += diff.collabDiff.removed.length;
+    if (diff.hasDiff || diff.status === "new") anyDiff = true;
+  }
+
+  const tags = [];
+  if (curSections.length !== histSections.length) {
+    tags.push(`<span class="vc-summary-tag diff-section">段落 ${curSections.length} → ${histSections.length}</span>`);
+  }
+  if (totalBpmDiff > 0) {
+    tags.push(`<span class="vc-summary-tag diff-bpm">BPM差异 ${totalBpmDiff}处</span>`);
+  }
+  if (totalVoiceDiff > 0) {
+    tags.push(`<span class="vc-summary-tag diff-voice">声部差异 ${totalVoiceDiff}处</span>`);
+  }
+  if (totalGridDiff > 0) {
+    tags.push(`<span class="vc-summary-tag diff-grid">口令差异 ${totalGridDiff}处</span>`);
+  }
+  if (totalCollabAdded > 0 || totalCollabRemoved > 0) {
+    tags.push(`<span class="vc-summary-tag diff-collab">批注 +${totalCollabAdded} -${totalCollabRemoved}</span>`);
+  }
+  if (!anyDiff) {
+    tags.push(`<span class="vc-summary-tag no-diff">完全一致</span>`);
+  }
+  vcSummary.innerHTML = tags.length ? tags.join("") : '<span class="vc-summary-tag no-diff">无差异</span>';
+
+  if (!anyDiff) {
+    vcBody.innerHTML = '<div class="vc-empty">当前谱面与历史方案完全一致，无需恢复。</div>';
+    vcRestoreSelectedBtn.disabled = true;
+    vcRestoreAllBtn.disabled = true;
+    return;
+  }
+
+  let html = "";
+  diffs.forEach((diff, idx) => {
+    const sectionId = diff.histSection?.id || diff.curSection?.id || `vc-section-${idx}`;
+    const badgeText = diff.status === "new" ? "历史多出" : diff.status === "removed" ? "当前多出" : diff.hasDiff ? "有差异" : "一致";
+    const badgeClass = diff.status === "new" ? "new" : diff.status === "removed" ? "removed" : diff.hasDiff ? "" : "same";
+    const canRestore = diff.status === "new" || (diff.hasDiff && diff.histSection);
+    const isChecked = vcSelectedSections.has(sectionId);
+
+    html += `<div class="vc-diff-section" data-vc-section-id="${sectionId}">`;
+    html += `<div class="vc-diff-section-header">`;
+    html += `<div class="vc-diff-section-title">`;
+    html += `<span>段落 ${idx + 1}</span>`;
+    html += `<span class="vc-diff-section-badge ${badgeClass}">${badgeText}</span>`;
+    if (diff.nameChanged) {
+      html += `<span style="font-size:13px;color:var(--muted);">「${diff.curName}」→「${diff.histName}」</span>`;
+    } else {
+      html += `<span style="font-size:13px;color:var(--muted);">「${diff.histName || diff.curName}」</span>`;
+    }
+    html += `</div>`;
+    html += `<div class="vc-diff-section-check">`;
+    if (canRestore) {
+      html += `<label><input type="checkbox" data-vc-check-section="${sectionId}" ${isChecked ? "checked" : ""}> 恢复此段落</label>`;
+    }
+    html += `</div>`;
+    html += `</div>`;
+
+    if (!diff.hasDiff && diff.status !== "new") {
+      html += `</div>`;
+      return;
+    }
+
+    html += `<div class="vc-diff-section-body">`;
+
+    if (diff.bpmChanged) {
+      html += `<div class="vc-diff-item">`;
+      html += `<div class="vc-diff-label"><span class="diff-icon changed"></span> BPM</div>`;
+      html += `<div class="vc-diff-values">`;
+      html += `<span class="vc-diff-val old">${diff.curBpm}</span>`;
+      html += `<span class="vc-diff-arrow">→</span>`;
+      html += `<span class="vc-diff-val new">${diff.histBpm}</span>`;
+      html += `</div></div>`;
+    }
+
+    if (diff.voiceDiff.length > 0) {
+      html += `<div class="vc-diff-item">`;
+      html += `<div class="vc-diff-label"><span class="diff-icon changed"></span> 声部开关</div>`;
+      diff.voiceDiff.forEach(v => {
+        html += `<div class="vc-diff-values" style="margin-bottom:4px;">`;
+        html += `<span style="font-weight:700;font-size:13px;min-width:40px;">${v.name}</span>`;
+        html += `<span class="vc-diff-val old">${v.curOn === null ? "-" : v.curOn ? "开" : "关"}</span>`;
+        html += `<span class="vc-diff-arrow">→</span>`;
+        html += `<span class="vc-diff-val new">${v.histOn === null ? "-" : v.histOn ? "开" : "关"}</span>`;
+        html += `</div>`;
+      });
+      html += `</div>`;
+    }
+
+    if (diff.gridDiff.length > 0) {
+      html += `<div class="vc-diff-item">`;
+      html += `<div class="vc-diff-label"><span class="diff-icon changed"></span> 口令网格 <span style="font-weight:400;font-size:11px;">（点击拍行可选中恢复）</span></div>`;
+      html += `<div class="vc-grid-diff"><table>`;
+
+      html += `<tr><th></th>`;
+      for (let s = 0; s < steps; s++) {
+        html += `<th>${beatLabel(s)}</th>`;
+      }
+      html += `</tr>`;
+
+      const changedSteps = new Set(diff.gridDiff.map(d => d.step));
+
+      for (let row = 0; row < instruments.length; row++) {
+        html += `<tr><td class="inst-label">${instruments[row].name}</td>`;
+        for (let s = 0; s < steps; s++) {
+          const change = diff.gridDiff.find(d => d.row === row && d.step === s);
+          if (change) {
+            const histDisplay = change.histVal || "∅";
+            html += `<td class="changed" data-hist="${histDisplay}" title="当前: ${change.curVal || "空"} → 历史: ${change.histVal || "空"}">${change.curVal || "∅"}</td>`;
+          } else {
+            const val = (diff.histSection?.pattern?.[row]?.[s]) || (diff.curSection?.pattern?.[row]?.[s]) || "";
+            html += `<td class="same-cell">${val}</td>`;
+          }
+        }
+        html += `</tr>`;
+      }
+
+      const changedStepList = [...changedSteps].sort((a, b) => a - b);
+      if (changedStepList.length > 0 && (diff.histSection || diff.status === "new")) {
+        html += `<tr class="beat-select-row"><td class="inst-label" style="font-size:11px;">选择拍</td>`;
+        for (let s = 0; s < steps; s++) {
+          const isChanged = changedSteps.has(s);
+          const beatKey = `${sectionId}::${s}`;
+          const isBeatSelected = vcSelectedBeats[beatKey] || false;
+          if (isChanged) {
+            html += `<td class="beat-header ${isBeatSelected ? "selected" : ""}" data-vc-beat="${sectionId}:${s}" style="cursor:pointer;">✓</td>`;
+          } else {
+            html += `<td class="beat-header same-cell"></td>`;
+          }
+        }
+        html += `</tr>`;
+      }
+
+      html += `</table></div></div>`;
+    }
+
+    if (diff.collabDiff.added.length > 0 || diff.collabDiff.removed.length > 0) {
+      html += `<div class="vc-diff-item">`;
+      html += `<div class="vc-diff-label"><span class="diff-icon changed"></span> 协作批注</div>`;
+      html += `<div class="vc-collab-diff">`;
+      diff.collabDiff.added.forEach(n => {
+        html += `<div class="vc-collab-item added">`;
+        html += `<span class="collab-diff-badge">历史有</span>`;
+        html += `<div class="collab-diff-content">`;
+        html += `<div>${n.content}</div>`;
+        html += `<div class="collab-diff-meta">${n.type === "teacher" ? "老师" : "学生"} · ${n.target === "all" ? "全段" : `第${n.target + 1}小节`}</div>`;
+        html += `</div></div>`;
+      });
+      diff.collabDiff.removed.forEach(n => {
+        html += `<div class="vc-collab-item removed">`;
+        html += `<span class="collab-diff-badge">当前有</span>`;
+        html += `<div class="collab-diff-content">`;
+        html += `<div>${n.content}</div>`;
+        html += `<div class="collab-diff-meta">${n.type === "teacher" ? "老师" : "学生"} · ${n.target === "all" ? "全段" : `第${n.target + 1}小节`}</div>`;
+        html += `</div></div>`;
+      });
+      html += `</div></div>`;
+    }
+
+    html += `</div></div>`;
+  });
+
+  vcBody.innerHTML = html;
+  updateVcRestoreBtn();
+}
+
+function updateVcRestoreBtn() {
+  const sectionCount = vcSelectedSections.size;
+  const beatCount = Object.values(vcSelectedBeats).filter(Boolean).length;
+  const hasSelection = sectionCount > 0 || beatCount > 0;
+
+  let btnText = "↺ 恢复选中项";
+  if (hasSelection) {
+    const parts = [];
+    if (sectionCount > 0) parts.push(`${sectionCount} 段落`);
+    if (beatCount > 0) parts.push(`${beatCount} 拍`);
+    btnText = `↺ 恢复选中项 (${parts.join(" + ")})`;
+  }
+  vcRestoreSelectedBtn.textContent = btnText;
+  vcRestoreSelectedBtn.disabled = !hasSelection;
+}
+
+function openVersionCompare(item) {
+  vcCompareItem = item;
+  vcSelectedSections = new Set();
+  vcSelectedBeats = {};
+
+  if (vcSubtitle) {
+    const itemDate = item.savedAt ? new Date(item.savedAt).toLocaleString("zh-CN") : "历史版本";
+    vcSubtitle.textContent = `对比「${item.name}」(${itemDate}) 与当前编辑谱面`;
+  }
+
+  const histSections = normalizeSavedToSections(item);
+  histSections.forEach(section => {
+    migrateNotesToCollabNotes(section);
+  });
+  const curSections = deepCloneSections(state.sections);
+
+  renderVersionCompare(curSections, histSections, item.name);
+  vcOverlay.style.display = "flex";
+}
+
+function closeVersionCompare() {
+  vcOverlay.style.display = "none";
+  vcCompareItem = null;
+  vcSelectedSections = new Set();
+  vcSelectedBeats = {};
+}
+
+function restoreFromCompare(restoreAll) {
+  if (!vcCompareItem) return;
+
+  const histSections = normalizeSavedToSections(vcCompareItem);
+  histSections.forEach(section => {
+    migrateNotesToCollabNotes(section);
+  });
+
+  if (restoreAll) {
+    if (!confirm(`确认整份覆盖恢复「${vcCompareItem.name}」？\n当前编辑内容将被完全替换。`)) return;
+    state.pieceName = vcCompareItem.pieceName || vcCompareItem.name;
+    state.sections = deepCloneSections(histSections);
+    if (state.sections.length > 0) {
+      state.currentSectionId = state.sections[0].id;
+    }
+  } else {
+    const sectionCount = vcSelectedSections.size;
+    const beatCount = Object.values(vcSelectedBeats).filter(Boolean).length;
+    if (!confirm(`确认恢复选中内容？\n${sectionCount > 0 ? `• ${sectionCount} 个段落\n` : ""}${beatCount > 0 ? `• ${beatCount} 拍口令` : ""}`)) return;
+
+    const selectedBeatInfo = {};
+    Object.entries(vcSelectedBeats).forEach(([key, selected]) => {
+      if (!selected) return;
+      const [sectionId, stepStr] = key.split("::");
+      if (!selectedBeatInfo[sectionId]) selectedBeatInfo[sectionId] = new Set();
+      selectedBeatInfo[sectionId].add(Number(stepStr));
+    });
+
+    vcSelectedSections.forEach(sectionId => {
+      const histSection = histSections.find(s => s.id === sectionId);
+      if (!histSection) return;
+      const curSection = state.sections.find(s => s.id === sectionId);
+
+      if (!curSection) {
+        state.sections.push(deepCloneSection(histSection));
+        return;
+      }
+
+      if (selectedBeatInfo[sectionId] && selectedBeatInfo[sectionId].size > 0) {
+        const beatsToRestore = selectedBeatInfo[sectionId];
+        for (let row = 0; row < instruments.length; row++) {
+          for (const step of beatsToRestore) {
+            if (step < steps && histSection.pattern[row] && histSection.pattern[row][step] !== undefined) {
+              curSection.pattern[row][step] = histSection.pattern[row][step];
+            }
+          }
+        }
+        if (histSection.bpm !== undefined) curSection.bpm = histSection.bpm;
+        if (histSection.name) curSection.name = histSection.name;
+        if (histSection.enabledInstruments) curSection.enabledInstruments = [...histSection.enabledInstruments];
+
+        if (histSection.collabNotes && histSection.collabNotes.length > 0) {
+          const histNoteIds = new Set(histSection.collabNotes.map(n => n.id));
+          const curNoteIds = new Set((curSection.collabNotes || []).map(n => n.id));
+          const merged = [...(curSection.collabNotes || [])];
+          histSection.collabNotes.forEach(n => {
+            if (!curNoteIds.has(n.id)) {
+              merged.push({ ...n });
+            }
+          });
+          curSection.collabNotes = merged;
+        }
+      } else {
+        const idx = state.sections.indexOf(curSection);
+        if (idx >= 0) {
+          state.sections[idx] = deepCloneSection(histSection);
+        }
+      }
+    });
+
+    Object.entries(vcSelectedBeats).forEach(([key, selected]) => {
+      if (!selected) return;
+      const [sectionId, stepStr] = key.split("::");
+      const step = Number(stepStr);
+      const histSection = histSections.find(s => s.id === sectionId);
+      if (!histSection) return;
+
+      if (vcSelectedSections.has(sectionId)) return;
+
+      let curSection = state.sections.find(s => s.id === sectionId);
+      if (!curSection) return;
+
+      for (let row = 0; row < instruments.length; row++) {
+        if (histSection.pattern[row] && histSection.pattern[row][step] !== undefined) {
+          curSection.pattern[row][step] = histSection.pattern[row][step];
+        }
+      }
+    });
+  }
+
+  save();
+  render();
+  closeVersionCompare();
+}
+
+if (vcCloseBtn) {
+  vcCloseBtn.addEventListener("click", closeVersionCompare);
+}
+if (vcCancelBtn) {
+  vcCancelBtn.addEventListener("click", closeVersionCompare);
+}
+if (vcOverlay) {
+  vcOverlay.addEventListener("click", (event) => {
+    if (event.target === vcOverlay) closeVersionCompare();
+  });
+}
+if (vcRestoreSelectedBtn) {
+  vcRestoreSelectedBtn.addEventListener("click", () => restoreFromCompare(false));
+}
+if (vcRestoreAllBtn) {
+  vcRestoreAllBtn.addEventListener("click", () => restoreFromCompare(true));
+}
+if (vcBody) {
+  vcBody.addEventListener("change", (event) => {
+    const checkEl = event.target.closest("[data-vc-check-section]");
+    if (checkEl) {
+      const sectionId = checkEl.dataset.vcCheckSection;
+      if (checkEl.checked) {
+        vcSelectedSections.add(sectionId);
+      } else {
+        vcSelectedSections.delete(sectionId);
+        Object.keys(vcSelectedBeats).forEach(key => {
+          if (key.startsWith(sectionId + "::")) {
+            delete vcSelectedBeats[key];
+          }
+        });
+      }
+      updateVcRestoreBtn();
+    }
+  });
+
+  vcBody.addEventListener("click", (event) => {
+    const beatEl = event.target.closest("[data-vc-beat]");
+    if (beatEl) {
+      const [sectionId, stepStr] = beatEl.dataset.vcBeat.split(":");
+      const step = Number(stepStr);
+      const key = `${sectionId}::${step}`;
+      if (vcSelectedBeats[key]) {
+        delete vcSelectedBeats[key];
+        beatEl.classList.remove("selected");
+      } else {
+        vcSelectedBeats[key] = true;
+        beatEl.classList.add("selected");
+      }
+      updateVcRestoreBtn();
+    }
+  });
+}
 
 setInterval(() => {
   if (dashboardTime) {
