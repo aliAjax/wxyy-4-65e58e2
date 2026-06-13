@@ -21,6 +21,7 @@
           <span>连续播放</span>
         </label>
         <button id="saveBtn" type="button">保存方案</button>
+        <button id="diagnosisToggleBtn" type="button" class="diagnosis-mode-btn">🎯 错拍诊断</button>
       </div>
     </header>
 
@@ -216,6 +217,100 @@
       </div>
       <div class="rehearsal-timeline-body" id="rehearsalTimelineBody">
         <div class="rehearsal-empty">尚未产生排练记录，播放后将自动记录</div>
+      </div>
+    </section>
+
+    <section class="diagnosis-panel" id="diagnosisPanel" style="display: none;">
+      <div class="diagnosis-header">
+        <h2>🎯 错拍诊断练习</h2>
+        <div class="diagnosis-controls">
+          <label class="diagnosis-difficulty">
+            难度：
+            <select id="diagnosisDifficulty">
+              <option value="easy">简单（隐藏20%）</option>
+              <option value="medium" selected>中等（隐藏40%）</option>
+              <option value="hard">困难（隐藏60%）</option>
+            </select>
+          </label>
+          <button type="button" id="diagnosisStartBtn" class="diagnosis-start-btn">开始练习</button>
+          <button type="button" id="diagnosisStopBtn" class="diagnosis-stop-btn" style="display: none;">结束练习</button>
+          <button type="button" id="diagnosisCloseBtn" class="diagnosis-close-btn">关闭</button>
+        </div>
+      </div>
+      <div class="diagnosis-body">
+        <div class="diagnosis-info" id="diagnosisInfo">
+          <div class="diagnosis-info-item">
+            <span class="diagnosis-info-label">当前状态</span>
+            <span class="diagnosis-info-value" id="diagnosisStatus">准备就绪</span>
+          </div>
+          <div class="diagnosis-info-item">
+            <span class="diagnosis-info-label">已答题数</span>
+            <span class="diagnosis-info-value" id="diagnosisAnswered">0</span>
+          </div>
+          <div class="diagnosis-info-item">
+            <span class="diagnosis-info-label">正确数</span>
+            <span class="diagnosis-info-value" id="diagnosisCorrect">0</span>
+          </div>
+          <div class="diagnosis-info-item">
+            <span class="diagnosis-info-label">正确率</span>
+            <span class="diagnosis-info-value" id="diagnosisAccuracy">—</span>
+          </div>
+        </div>
+        <div class="diagnosis-answer-panel" id="diagnosisAnswerPanel" style="display: none;">
+          <div class="diagnosis-answer-title">请选择当前拍的乐器口令：</div>
+          <div class="diagnosis-answer-buttons" id="diagnosisAnswerButtons">
+            <button type="button" class="diagnosis-answer-btn" data-answer="0">
+              <span class="answer-token token-cang">仓</span>
+              <span class="answer-name">大锣</span>
+            </button>
+            <button type="button" class="diagnosis-answer-btn" data-answer="1">
+              <span class="answer-token token-dong">冬</span>
+              <span class="answer-name">鼓</span>
+            </button>
+            <button type="button" class="diagnosis-answer-btn" data-answer="2">
+              <span class="answer-token token-cai">才</span>
+              <span class="answer-name">钹</span>
+            </button>
+            <button type="button" class="diagnosis-answer-btn" data-answer="3">
+              <span class="answer-token token-tai">台</span>
+              <span class="answer-name">小锣</span>
+            </button>
+            <button type="button" class="diagnosis-answer-btn diagnosis-rest-btn" data-answer="-1">
+              <span class="answer-token">0</span>
+              <span class="answer-name">休止</span>
+            </button>
+          </div>
+          <div class="diagnosis-feedback" id="diagnosisFeedback"></div>
+        </div>
+        <div class="diagnosis-result" id="diagnosisResult" style="display: none;">
+          <h3>练习结果</h3>
+          <div class="diagnosis-result-stats">
+            <div class="result-stat">
+              <div class="result-stat-value" id="resultAccuracy">0%</div>
+              <div class="result-stat-label">正确率</div>
+            </div>
+            <div class="result-stat">
+              <div class="result-stat-value" id="resultTotal">0</div>
+              <div class="result-stat-label">总题数</div>
+            </div>
+            <div class="result-stat">
+              <div class="result-stat-value" id="resultCorrect">0</div>
+              <div class="result-stat-label">正确</div>
+            </div>
+            <div class="result-stat">
+              <div class="result-stat-value" id="resultWrong">0</div>
+              <div class="result-stat-label">错误</div>
+            </div>
+          </div>
+          <div class="diagnosis-result-section">
+            <h4>❌ 错拍位置</h4>
+            <div class="wrong-positions" id="wrongPositions"></div>
+          </div>
+          <div class="diagnosis-result-section">
+            <h4>🔄 容易混淆的乐器</h4>
+            <div class="confused-instruments" id="confusedInstruments"></div>
+          </div>
+        </div>
       </div>
     </section>
 

@@ -232,6 +232,24 @@ let currentRehearsalId = null;
 let currentRehearsalStartTime = null;
 let pendingRehearsalResume = null;
 
+const diagnosisStorageKey = "wxyy-4-diagnosis-result";
+let diagnosisMode = false;
+let diagnosisActive = false;
+let diagnosisHiddenCells = [];
+let diagnosisCurrentStep = -1;
+let diagnosisAnswers = [];
+let diagnosisStats = {
+  total: 0,
+  correct: 0,
+  wrong: 0,
+  wrongPositions: [],
+  confusedInstruments: {}
+};
+let diagnosisWaitingForAnswer = false;
+let diagnosisPaused = false;
+let diagnosisStartTime = null;
+let lastDiagnosisResult = null;
+
 const grid = document.querySelector("#grid");
 const savedList = document.querySelector("#savedList");
 const structure = document.querySelector("#structure");
@@ -359,12 +377,39 @@ function renderGrid() {
     header.push(`<div class="beat-cell">${beatLabel(i)}</div>`);
   }
 
+  const hiddenSet = diagnosisMode && diagnosisActive
+    ? new Set(diagnosisHiddenCells.map(c => `${c.row}-${c.step}`))
+    : null;
+  const answeredMap = {};
+  if (diagnosisMode && diagnosisActive) {
+    diagnosisAnswers.forEach(a => {
+      answeredMap[`${a.row}-${a.step}`] = a;
+    });
+  }
+
   const rows = instruments.flatMap((instrument, rowIndex) => {
     const muted = !section.enabledInstruments[rowIndex];
     const row = [`<div class="label-cell ${muted ? "muted" : ""}">${instrument.name}</div>`];
     for (let step = 0; step < steps; step += 1) {
       const value = section.pattern[rowIndex][step];
-      row.push(`<button class="cell ${value ? "filled" : ""} ${muted ? "muted" : ""}" type="button" data-row="${rowIndex}" data-step="${step}">${value}</button>`);
+      const isHidden = hiddenSet ? hiddenSet.has(`${rowIndex}-${step}`) : false;
+      const answered = answeredMap[`${rowIndex}-${step}`];
+
+      let cellClass = `cell ${value ? "filled" : ""} ${muted ? "muted" : ""}`;
+      let cellContent = value;
+
+      if (isHidden) {
+        cellClass += " hidden-cell";
+        if (answered) {
+          cellClass += answered.correct ? " answered-correct" : " answered-wrong";
+          cellContent = value || "0";
+          if (!answered.correct) {
+            cellContent += `<span class="correct-answer">${value || "0"}</span>`;
+          }
+        }
+      }
+
+      row.push(`<button class="${cellClass}" type="button" data-row="${rowIndex}" data-step="${step}">${cellContent}</button>`);
     }
     return row;
   });
@@ -1133,6 +1178,7 @@ function stopPlayback() {
 }
 
 grid.addEventListener("click", (event) => {
+  if (diagnosisMode) return;
   const cell = event.target.closest(".cell");
   if (!cell) return;
   const section = getCurrentSection();
@@ -1907,6 +1953,514 @@ schemeImportListBtn.addEventListener("click", () => {
 schemeConfirmBtn.addEventListener("click", applySchemeImport);
 
 schemeCancelBtn.addEventListener("click", resetSchemeImportState);
+
+const diagnosisToggleBtn = document.querySelector("#diagnosisToggleBtn");
+const diagnosisPanel = document.querySelector("#diagnosisPanel");
+const diagnosisStartBtn = document.querySelector("#diagnosisStartBtn");
+const diagnosisStopBtn = document.querySelector("#diagnosisStopBtn");
+const diagnosisCloseBtn = document.querySelector("#diagnosisCloseBtn");
+const diagnosisDifficulty = document.querySelector("#diagnosisDifficulty");
+const diagnosisStatus = document.querySelector("#diagnosisStatus");
+const diagnosisAnswered = document.querySelector("#diagnosisAnswered");
+const diagnosisCorrect = document.querySelector("#diagnosisCorrect");
+const diagnosisAccuracy = document.querySelector("#diagnosisAccuracy");
+const diagnosisAnswerPanel = document.querySelector("#diagnosisAnswerPanel");
+const diagnosisAnswerButtons = document.querySelector("#diagnosisAnswerButtons");
+const diagnosisFeedback = document.querySelector("#diagnosisFeedback");
+const diagnosisResult = document.querySelector("#diagnosisResult");
+const wrongPositionsEl = document.querySelector("#wrongPositions");
+const confusedInstrumentsEl = document.querySelector("#confusedInstruments");
+const resultAccuracy = document.querySelector("#resultAccuracy");
+const resultTotal = document.querySelector("#resultTotal");
+const resultCorrect = document.querySelector("#resultCorrect");
+const resultWrong = document.querySelector("#resultWrong");
+
+function loadLastDiagnosisResult() {
+  try {
+    const raw = localStorage.getItem(diagnosisStorageKey);
+    if (raw) {
+      lastDiagnosisResult = JSON.parse(raw);
+    }
+  } catch {
+    lastDiagnosisResult = null;
+  }
+}
+
+function saveDiagnosisResult(result) {
+  try {
+    localStorage.setItem(diagnosisStorageKey, JSON.stringify(result));
+    lastDiagnosisResult = result;
+  } catch {}
+}
+
+function getDifficultyRatio() {
+  const difficulty = diagnosisDifficulty.value;
+  switch (difficulty) {
+    case "easy": return 0.2;
+    case "hard": return 0.6;
+    default: return 0.4;
+  }
+}
+
+function generateHiddenCells() {
+  const section = getCurrentSection();
+  if (!section) return [];
+
+  const ratio = getDifficultyRatio();
+  const filledCells = [];
+
+  for (let row = 0; row < instruments.length; row++) {
+    for (let step = 0; step < steps; step++) {
+      if (section.pattern[row][step]) {
+        filledCells.push({ row, step });
+      }
+    }
+  }
+
+  for (let step = 0; step < steps; step++) {
+    const hasAny = instruments.some((_, row) => section.pattern[row][step]);
+    if (!hasAny) {
+      filledCells.push({ row: -1, step });
+    }
+  }
+
+  const totalQuestions = Math.max(4, Math.floor(filledCells.length * ratio));
+  const shuffled = [...filledCells].sort(() => Math.random() - 0.5);
+  const selected = shuffled.slice(0, Math.min(totalQuestions, shuffled.length));
+
+  selected.sort((a, b) => a.step - b.step);
+
+  return selected;
+}
+
+function updateDiagnosisInfo() {
+  const answered = diagnosisAnswers.length;
+  const correct = diagnosisAnswers.filter(a => a.correct).length;
+  const total = diagnosisHiddenCells.length;
+  const accuracy = answered > 0 ? Math.round((correct / answered) * 100) : 0;
+
+  diagnosisAnswered.textContent = `${answered}/${total}`;
+  diagnosisCorrect.textContent = correct;
+  diagnosisAccuracy.textContent = answered > 0 ? `${accuracy}%` : "—";
+}
+
+function showDiagnosisFeedback(correct, correctAnswer, userAnswer) {
+  diagnosisFeedback.className = "diagnosis-feedback " + (correct ? "correct" : "wrong");
+  if (correct) {
+    diagnosisFeedback.textContent = "✓ 回答正确！";
+  } else {
+    const correctName = correctAnswer === -1 ? "休止" : instruments[correctAnswer]?.name || "未知";
+    const userName = userAnswer === -1 ? "休止" : instruments[userAnswer]?.name || "未知";
+    diagnosisFeedback.innerHTML = `✗ 回答错误！正确答案：<strong>${correctName}</strong>，你的答案：<strong>${userName}</strong>`;
+  }
+}
+
+function clearDiagnosisFeedback() {
+  diagnosisFeedback.className = "diagnosis-feedback";
+  diagnosisFeedback.textContent = "";
+}
+
+function enableAnswerButtons(enabled) {
+  const buttons = diagnosisAnswerButtons.querySelectorAll(".diagnosis-answer-btn");
+  buttons.forEach(btn => {
+    btn.disabled = !enabled;
+    btn.classList.remove("correct", "wrong");
+  });
+}
+
+function getCurrentQuestion() {
+  if (diagnosisCurrentStep < 0 || diagnosisCurrentStep >= diagnosisHiddenCells.length) {
+    return null;
+  }
+  return diagnosisHiddenCells[diagnosisCurrentStep];
+}
+
+function answerDiagnosis(answerIndex) {
+  if (!diagnosisWaitingForAnswer || !diagnosisActive) return;
+
+  const question = getCurrentQuestion();
+  if (!question) return;
+
+  const section = getCurrentSection();
+  if (!section) return;
+
+  let correctAnswer;
+  if (question.row === -1) {
+    correctAnswer = -1;
+  } else {
+    correctAnswer = section.pattern[question.row][question.step] ? question.row : -1;
+  }
+
+  const isCorrect = answerIndex === correctAnswer;
+
+  const buttons = diagnosisAnswerButtons.querySelectorAll(".diagnosis-answer-btn");
+  buttons.forEach(btn => {
+    const btnAnswer = Number(btn.dataset.answer);
+    if (btnAnswer === correctAnswer) {
+      btn.classList.add("correct");
+    }
+    if (btnAnswer === answerIndex && !isCorrect) {
+      btn.classList.add("wrong");
+    }
+  });
+
+  enableAnswerButtons(false);
+  showDiagnosisFeedback(isCorrect, correctAnswer, answerIndex);
+
+  diagnosisAnswers.push({
+    row: question.row,
+    step: question.step,
+    userAnswer: answerIndex,
+    correctAnswer: correctAnswer,
+    correct: isCorrect,
+    beatLabel: beatLabel(question.step)
+  });
+
+  if (!isCorrect) {
+    diagnosisStats.wrongPositions.push({
+      step: question.step,
+      beatLabel: beatLabel(question.step),
+      row: question.row,
+      correctAnswer,
+      userAnswer: answerIndex,
+      instrumentName: question.row === -1 ? "休止" : instruments[question.row]?.name
+    });
+
+    if (correctAnswer >= 0 && answerIndex >= 0) {
+      const key = `${Math.min(correctAnswer, answerIndex)}-${Math.max(correctAnswer, answerIndex)}`;
+      if (!diagnosisStats.confusedInstruments[key]) {
+        diagnosisStats.confusedInstruments[key] = {
+          instr1: Math.min(correctAnswer, answerIndex),
+          instr2: Math.max(correctAnswer, answerIndex),
+          count: 0
+        };
+      }
+      diagnosisStats.confusedInstruments[key].count++;
+    }
+  }
+
+  diagnosisStats.total = diagnosisAnswers.length;
+  diagnosisStats.correct = diagnosisAnswers.filter(a => a.correct).length;
+  diagnosisStats.wrong = diagnosisAnswers.filter(a => !a.correct).length;
+
+  updateDiagnosisInfo();
+  renderGrid();
+
+  diagnosisWaitingForAnswer = false;
+
+  setTimeout(() => {
+    if (diagnosisActive) {
+      diagnosisCurrentStep++;
+      if (diagnosisCurrentStep < diagnosisHiddenCells.length) {
+        clearDiagnosisFeedback();
+        enableAnswerButtons(true);
+        continueDiagnosisPlayback();
+      } else {
+        finishDiagnosis();
+      }
+    }
+  }, 1200);
+}
+
+function continueDiagnosisPlayback() {
+  if (!diagnosisActive || !diagnosisPaused) return;
+
+  diagnosisPaused = false;
+  diagnosisStatus.textContent = "播放中...";
+
+  const section = getCurrentSection();
+  if (!section) return;
+
+  const bpm = section.bpm;
+  timer = setInterval(diagnosisTick, 60000 / bpm);
+}
+
+function diagnosisTick() {
+  const section = getCurrentSection();
+  if (!section) return;
+
+  const [start, end] = currentRange(section);
+  if (playhead < start || playhead > end) playhead = start;
+
+  const nextQuestion = diagnosisHiddenCells[diagnosisCurrentStep];
+
+  if (nextQuestion && playhead === nextQuestion.step) {
+    clearInterval(timer);
+    timer = null;
+    diagnosisPaused = true;
+    diagnosisWaitingForAnswer = true;
+    diagnosisStatus.textContent = "请作答...";
+    diagnosisAnswerPanel.style.display = "block";
+    clearDiagnosisFeedback();
+    enableAnswerButtons(true);
+
+    highlight(playhead);
+    instruments.forEach((instrument, rowIndex) => {
+      if (section.enabledInstruments[rowIndex] && section.pattern[rowIndex][playhead]) {
+        playSound(instrument);
+      }
+    });
+
+    return;
+  }
+
+  highlight(playhead);
+  instruments.forEach((instrument, rowIndex) => {
+    if (section.enabledInstruments[rowIndex] && section.pattern[rowIndex][playhead]) {
+      playSound(instrument);
+    }
+  });
+
+  if (playhead >= end) {
+    if (nextQuestion && diagnosisCurrentStep < diagnosisHiddenCells.length) {
+      playhead = start;
+    } else {
+      finishDiagnosis();
+      return;
+    }
+  } else {
+    playhead = playhead + 1;
+  }
+}
+
+function startDiagnosis() {
+  const section = getCurrentSection();
+  if (!section) {
+    alert("请先选择一个段落。");
+    return;
+  }
+
+  if (timer) {
+    stopPlayback();
+  }
+
+  diagnosisHiddenCells = generateHiddenCells();
+  if (diagnosisHiddenCells.length === 0) {
+    alert("当前谱面没有足够的内容用于诊断练习，请先填入口令。");
+    return;
+  }
+
+  diagnosisActive = true;
+  diagnosisCurrentStep = 0;
+  diagnosisAnswers = [];
+  diagnosisStats = {
+    total: 0,
+    correct: 0,
+    wrong: 0,
+    wrongPositions: [],
+    confusedInstruments: {}
+  };
+  diagnosisWaitingForAnswer = false;
+  diagnosisPaused = false;
+  diagnosisStartTime = Date.now();
+  playhead = 0;
+
+  diagnosisStartBtn.style.display = "none";
+  diagnosisStopBtn.style.display = "inline-block";
+  diagnosisDifficulty.disabled = true;
+  diagnosisResult.style.display = "none";
+  diagnosisAnswerPanel.style.display = "none";
+  diagnosisStatus.textContent = "准备开始...";
+
+  updateDiagnosisInfo();
+  renderGrid();
+
+  setTimeout(() => {
+    if (diagnosisActive) {
+      diagnosisStatus.textContent = "播放中...";
+      const bpm = section.bpm;
+      timer = setInterval(diagnosisTick, 60000 / bpm);
+      diagnosisTick();
+    }
+  }, 500);
+}
+
+function stopDiagnosis() {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+
+  diagnosisActive = false;
+  diagnosisPaused = false;
+  diagnosisWaitingForAnswer = false;
+
+  diagnosisStartBtn.style.display = "inline-block";
+  diagnosisStopBtn.style.display = "none";
+  diagnosisDifficulty.disabled = false;
+  diagnosisAnswerPanel.style.display = "none";
+  diagnosisStatus.textContent = "已结束";
+
+  document.querySelectorAll(".cell.playing").forEach((cell) => cell.classList.remove("playing"));
+
+  renderGrid();
+
+  if (diagnosisAnswers.length > 0) {
+    showDiagnosisResult();
+  }
+}
+
+function finishDiagnosis() {
+  stopDiagnosis();
+
+  const result = {
+    timestamp: new Date().toISOString(),
+    sectionName: getCurrentSection()?.name || "",
+    pieceName: state.pieceName,
+    bpm: getCurrentSection()?.bpm || 96,
+    difficulty: diagnosisDifficulty.value,
+    totalQuestions: diagnosisHiddenCells.length,
+    answered: diagnosisAnswers.length,
+    correct: diagnosisStats.correct,
+    wrong: diagnosisStats.wrong,
+    accuracy: diagnosisAnswers.length > 0
+      ? Math.round((diagnosisStats.correct / diagnosisAnswers.length) * 100)
+      : 0,
+    wrongPositions: diagnosisStats.wrongPositions,
+    confusedInstruments: Object.values(diagnosisStats.confusedInstruments).sort((a, b) => b.count - a.count),
+    durationMs: diagnosisStartTime ? Date.now() - diagnosisStartTime : null
+  };
+
+  saveDiagnosisResult(result);
+}
+
+function showDiagnosisResult() {
+  const total = diagnosisAnswers.length;
+  const correct = diagnosisStats.correct;
+  const wrong = diagnosisStats.wrong;
+  const accuracy = total > 0 ? Math.round((correct / total) * 100) : 0;
+
+  resultAccuracy.textContent = `${accuracy}%`;
+  resultTotal.textContent = total;
+  resultCorrect.textContent = correct;
+  resultWrong.textContent = wrong;
+
+  if (diagnosisStats.wrongPositions.length > 0) {
+    wrongPositionsEl.innerHTML = diagnosisStats.wrongPositions.map(pos => `
+      <span class="wrong-position-item">
+        <span class="wrong-beat">${pos.beatLabel}</span>
+        <span class="wrong-instrument">
+          答：${pos.userAnswer === -1 ? "休止" : instruments[pos.userAnswer]?.name}
+          → 正确：${pos.correctAnswer === -1 ? "休止" : instruments[pos.correctAnswer]?.name}
+        </span>
+      </span>
+    `).join("");
+  } else {
+    wrongPositionsEl.innerHTML = '<span class="diagnosis-empty">全部正确，没有错拍！🎉</span>';
+  }
+
+  const confusedList = Object.values(diagnosisStats.confusedInstruments).sort((a, b) => b.count - a.count);
+  if (confusedList.length > 0) {
+    confusedInstrumentsEl.innerHTML = confusedList.map(item => `
+      <span class="confused-item">
+        ${instruments[item.instr1]?.name} ↔ ${instruments[item.instr2]?.name}
+        <span class="confused-count">${item.count}次</span>
+      </span>
+    `).join("");
+  } else {
+    confusedInstrumentsEl.innerHTML = '<span class="diagnosis-empty">暂无混淆记录</span>';
+  }
+
+  diagnosisResult.style.display = "block";
+}
+
+function showLastDiagnosisResult() {
+  if (!lastDiagnosisResult) return;
+
+  resultAccuracy.textContent = `${lastDiagnosisResult.accuracy}%`;
+  resultTotal.textContent = lastDiagnosisResult.answered;
+  resultCorrect.textContent = lastDiagnosisResult.correct;
+  resultWrong.textContent = lastDiagnosisResult.wrong;
+
+  if (lastDiagnosisResult.wrongPositions && lastDiagnosisResult.wrongPositions.length > 0) {
+    wrongPositionsEl.innerHTML = lastDiagnosisResult.wrongPositions.map(pos => `
+      <span class="wrong-position-item">
+        <span class="wrong-beat">${pos.beatLabel}</span>
+        <span class="wrong-instrument">
+          答：${pos.userAnswer === -1 ? "休止" : instruments[pos.userAnswer]?.name}
+          → 正确：${pos.correctAnswer === -1 ? "休止" : instruments[pos.correctAnswer]?.name}
+        </span>
+      </span>
+    `).join("");
+  } else {
+    wrongPositionsEl.innerHTML = '<span class="diagnosis-empty">全部正确，没有错拍！🎉</span>';
+  }
+
+  if (lastDiagnosisResult.confusedInstruments && lastDiagnosisResult.confusedInstruments.length > 0) {
+    confusedInstrumentsEl.innerHTML = lastDiagnosisResult.confusedInstruments.map(item => `
+      <span class="confused-item">
+        ${instruments[item.instr1]?.name} ↔ ${instruments[item.instr2]?.name}
+        <span class="confused-count">${item.count}次</span>
+      </span>
+    `).join("");
+  } else {
+    confusedInstrumentsEl.innerHTML = '<span class="diagnosis-empty">暂无混淆记录</span>';
+  }
+
+  diagnosisResult.style.display = "block";
+  diagnosisStatus.textContent = lastDiagnosisResult.timestamp
+    ? `上次：${new Date(lastDiagnosisResult.timestamp).toLocaleString("zh-CN")}`
+    : "上次结果";
+}
+
+function toggleDiagnosisMode() {
+  diagnosisMode = !diagnosisMode;
+
+  if (diagnosisMode) {
+    diagnosisPanel.style.display = "block";
+    diagnosisToggleBtn.classList.add("active");
+    diagnosisStartBtn.style.display = "inline-block";
+    diagnosisStopBtn.style.display = "none";
+    diagnosisDifficulty.disabled = false;
+    diagnosisAnswerPanel.style.display = "none";
+    diagnosisResult.style.display = "none";
+    diagnosisStatus.textContent = "准备就绪";
+    diagnosisAnswered.textContent = "0";
+    diagnosisCorrect.textContent = "0";
+    diagnosisAccuracy.textContent = "—";
+
+    if (lastDiagnosisResult) {
+      showLastDiagnosisResult();
+    }
+
+    renderGrid();
+  } else {
+    if (diagnosisActive) {
+      if (!confirm("诊断练习正在进行中，确定要关闭吗？")) {
+        diagnosisMode = true;
+        return;
+      }
+      stopDiagnosis();
+    }
+
+    diagnosisPanel.style.display = "none";
+    diagnosisToggleBtn.classList.remove("active");
+    renderGrid();
+  }
+}
+
+diagnosisToggleBtn.addEventListener("click", toggleDiagnosisMode);
+
+diagnosisStartBtn.addEventListener("click", startDiagnosis);
+
+diagnosisStopBtn.addEventListener("click", () => {
+  if (confirm("确定要结束诊断练习吗？")) {
+    stopDiagnosis();
+  }
+});
+
+diagnosisCloseBtn.addEventListener("click", () => {
+  toggleDiagnosisMode();
+});
+
+diagnosisAnswerButtons.addEventListener("click", (event) => {
+  const btn = event.target.closest(".diagnosis-answer-btn");
+  if (!btn || btn.disabled) return;
+  const answer = Number(btn.dataset.answer);
+  answerDiagnosis(answer);
+});
+
+loadLastDiagnosisResult();
 
 render();
 
