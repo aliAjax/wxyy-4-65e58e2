@@ -284,9 +284,12 @@ const schemeCancelBtn = document.querySelector("#schemeCancelBtn");
 const SCHEMA_VERSION = 2;
 const SUPPORTED_VERSIONS = [1, 2];
 
+let parsedPattern = null;
+let editingSectionId = null;
 let parsedSchemeData = null;
 let parsedSchemeIsImportToList = false;
 let parsedSchemeCompatibility = null;
+let pendingImportToList = false;
 
 function getCurrentSection() {
   return state.sections.find((s) => s.id === state.currentSectionId);
@@ -1888,8 +1891,6 @@ function applySchemeImport() {
     showSchemeError(error.message);
   }
 }
-
-let pendingImportToList = false;
 
 schemeExportBtn.addEventListener("click", exportScheme);
 
