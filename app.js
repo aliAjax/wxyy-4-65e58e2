@@ -2336,8 +2336,9 @@ function diagnosisTick() {
   const section = getCurrentSection();
   if (!section) return;
 
-  const [start, end] = currentRange(section);
-  if (playhead < start || playhead > end) playhead = start;
+  const diagnosisStart = 0;
+  const diagnosisEnd = steps - 1;
+  if (playhead < diagnosisStart || playhead > diagnosisEnd) playhead = diagnosisStart;
 
   const nextQuestion = diagnosisHiddenCells[diagnosisCurrentStep];
 
@@ -2368,9 +2369,9 @@ function diagnosisTick() {
     }
   });
 
-  if (playhead >= end) {
+  if (playhead >= diagnosisEnd) {
     if (nextQuestion && diagnosisCurrentStep < diagnosisHiddenCells.length) {
-      playhead = start;
+      playhead = diagnosisStart;
     } else {
       finishDiagnosis();
       return;
