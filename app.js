@@ -1702,6 +1702,10 @@ savedList.addEventListener("click", (event) => {
     state.currentSectionId = section.id;
   }
 
+  state.sections.forEach(section => {
+    migrateNotesToCollabNotes(section);
+  });
+
   save();
   render();
 });
@@ -2192,6 +2196,8 @@ function validateAndMigrateScheme(data) {
     compatibility.canImport = false;
   }
 
+  migrateAllSectionsToCollabNotes(migratedData);
+
   return { data: migratedData, compatibility };
 }
 
@@ -2341,6 +2347,13 @@ function applySchemeImport() {
         if (!item.createdAt) {
           item.createdAt = new Date().toISOString();
         }
+        if (Array.isArray(item.sections)) {
+          item.sections.forEach(section => {
+            migrateNotesToCollabNotes(section);
+          });
+        } else if (item.notes) {
+          migrateNotesToCollabNotes(item);
+        }
         state.saved.unshift(item);
         existingIds.add(item.id);
         addedCount++;
@@ -2374,6 +2387,10 @@ function applySchemeImport() {
         state.currentSectionId = parsedSchemeData.currentSectionId || state.sections[0]?.id;
         state.continuousPlay = parsedSchemeData.continuousPlay ?? false;
 
+        state.sections.forEach(section => {
+          migrateNotesToCollabNotes(section);
+        });
+
         if (parsedSchemeData.saved && Array.isArray(parsedSchemeData.saved) && parsedSchemeData.saved.length > 0) {
           const existingIds = new Set(state.saved.map((s) => s.id));
           const importedSaved = deepCloneSavedList(parsedSchemeData.saved);
@@ -2383,6 +2400,13 @@ function applySchemeImport() {
             }
             if (!item.createdAt) {
               item.createdAt = new Date().toISOString();
+            }
+            if (Array.isArray(item.sections)) {
+              item.sections.forEach(section => {
+                migrateNotesToCollabNotes(section);
+              });
+            } else if (item.notes) {
+              migrateNotesToCollabNotes(item);
             }
             state.saved.unshift(item);
             existingIds.add(item.id);
