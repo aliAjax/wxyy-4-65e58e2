@@ -2382,6 +2382,9 @@ function tempoTrainerTick() {
   if (playhead >= end) {
     tempoTrainer.currentSubRound++;
 
+    tempoTrainer.currentRound++;
+    tempoTrainer.beatsRemaining = tempoTrainer.totalBeatsPerRound;
+
     if (tempoTrainer.currentSubRound >= tempoTrainer.roundsPerBpm) {
       tempoTrainer.currentBpmIndex++;
       tempoTrainer.currentSubRound = 0;
@@ -2396,9 +2399,6 @@ function tempoTrainerTick() {
       bpmInput.value = nextBpm;
       save();
     }
-
-    tempoTrainer.currentRound++;
-    tempoTrainer.beatsRemaining = tempoTrainer.totalBeatsPerRound;
 
     if (tempoTrainer.pauseBetweenRounds > 0) {
       clearInterval(timer);
@@ -2464,7 +2464,9 @@ function stopTempoTrainer() {
   tempoTrainer.active = false;
   tempoTrainer.pausing = false;
 
-  tempoStatus.style.display = "none";
+  if (!tempoTrainer.completed) {
+    tempoStatus.style.display = "none";
+  }
   tempoTrainerSection.querySelector('.tempo-setup').classList.remove('disabled');
   tempoTrainerToggle.disabled = false;
   loopSelect.disabled = false;
@@ -2482,6 +2484,8 @@ function stopTempoTrainer() {
 
 function finishTempoTrainer() {
   tempoTrainer.completed = true;
+  tempoTrainer.currentRound = tempoTrainer.totalRounds;
+  tempoTrainer.beatsRemaining = 0;
   updateTempoStatusDisplay();
   stopTempoTrainer();
   alert("🎉 恭喜！变速训练已完成！");
@@ -2499,6 +2503,8 @@ function resetTempoTrainer() {
   tempoTrainer.currentSubRound = 0;
   tempoTrainer.completed = false;
   tempoTrainer.beatsRemaining = 0;
+
+  tempoStatus.style.display = "none";
 
   tempoGenerateBtn.disabled = false;
   tempoGenerateBtn.textContent = '🎯 生成BPM阶梯';
@@ -2530,6 +2536,7 @@ function toggleTempoTrainer() {
       }
       stopTempoTrainer();
     }
+    tempoTrainer.completed = false;
     tempoTrainerSection.classList.add('disabled');
     tempoStatus.style.display = "none";
     updatePlayButtonsState();
