@@ -7,110 +7,160 @@ const instruments = [
 ];
 const steps = 16;
 
-function createEmptySection(name = "新段落", bpm = 96) {
+function deepCloneSection(section) {
+  if (!section) return null;
+  return {
+    id: section.id,
+    name: section.name,
+    bpm: section.bpm,
+    loop: section.loop,
+    notes: Array.isArray(section.notes) ? [...section.notes] : [],
+    pattern: Array.isArray(section.pattern)
+      ? section.pattern.map((row) => (Array.isArray(row) ? [...row] : []))
+      : instruments.map(() => Array(steps).fill("")),
+    enabledInstruments: Array.isArray(section.enabledInstruments)
+      ? [...section.enabledInstruments]
+      : [true, true, true, true]
+  };
+}
+
+function deepCloneSections(sections) {
+  if (!Array.isArray(sections)) return [];
+  return sections.map(deepCloneSection);
+}
+
+function deepCloneSavedItem(item) {
+  if (!item) return null;
+  return {
+    id: item.id,
+    name: item.name,
+    bpm: item.bpm,
+    sectionCount: item.sectionCount || 1,
+    pieceName: item.pieceName,
+    sections: deepCloneSections(item.sections),
+    currentSectionId: item.currentSectionId,
+    createdAt: item.createdAt,
+    loop: item.loop,
+    notes: Array.isArray(item.notes) ? [...item.notes] : [],
+    pattern: Array.isArray(item.pattern)
+      ? item.pattern.map((row) => (Array.isArray(row) ? [...row] : []))
+      : null,
+    enabledInstruments: Array.isArray(item.enabledInstruments)
+      ? [...item.enabledInstruments]
+      : null
+  };
+}
+
+function deepCloneSavedList(savedList) {
+  if (!Array.isArray(savedList)) return [];
+  return savedList.map(deepCloneSavedItem);
+}
+
+function createDefaultSection(name = "段落 1") {
   return {
     id: crypto.randomUUID(),
-    name: name,
-    bpm: bpm,
+    name,
+    bpm: 96,
     loop: "",
     notes: [],
-    pattern: instruments.map((instrument) => Array.from({ length: steps }, () => "")),
+    pattern: instruments.map((instrument) =>
+      Array.from({ length: steps }, (_, index) =>
+        index % 4 === 0 ? instrument.token : ""
+      )
+    ),
     enabledInstruments: [true, true, true, true]
   };
 }
 
-function createDefaultSection() {
-  const section = createEmptySection("出场锣鼓-慢起", 96);
-  section.pattern = instruments.map((instrument) =>
-    Array.from({ length: steps }, (_, index) => index % 4 === 0 ? instrument.token : "")
-  );
-  return section;
-}
-
 const defaultState = {
-  schemaVersion: 2,
-  sections: [createDefaultSection()],
+  pieceName: "出场锣鼓-慢起",
+  sections: [createDefaultSection("出场锣鼓")],
   currentSectionId: null,
   continuousPlay: false,
-  continuousPlayIndex: 0,
   saved: [],
   playCount: 0,
   lastPlayedAt: null,
   recentPlayedSection: ""
 };
 
-function migrateOldData(oldData) {
-  if (oldData.schemaVersion === 2 && Array.isArray(oldData.sections)) {
-    return oldData;
+function migrateOldFormat(oldState) {
+  if (oldState.sections && Array.isArray(oldState.sections)) {
+    return {
+      pieceName: oldState.pieceName || "出场锣鼓-慢起",
+      sections: deepCloneSections(oldState.sections),
+      currentSectionId: oldState.currentSectionId || oldState.sections[0]?.id || null,
+      continuousPlay: oldState.continuousPlay || false,
+      saved: deepCloneSavedList(oldState.saved),
+      playCount: oldState.playCount || 0,
+      lastPlayedAt: oldState.lastPlayedAt || null,
+      recentPlayedSection: oldState.recentPlayedSection || ""
+    };
   }
-
-  const migratedSection = {
+  const section = {
     id: crypto.randomUUID(),
-    name: oldData.pieceName || "未命名段落",
-    bpm: oldData.bpm || 96,
-    loop: oldData.loop || "",
-    notes: oldData.notes || [],
-    pattern: oldData.pattern || instruments.map(() => Array(steps).fill("")),
-    enabledInstruments: oldData.enabledInstruments || [true, true, true, true]
+    name: oldState.pieceName || "主段落",
+    bpm: oldState.bpm || 96,
+    loop: oldState.loop || "",
+    notes: Array.isArray(oldState.notes) ? [...oldState.notes] : [],
+    pattern: Array.isArray(oldState.pattern)
+      ? oldState.pattern.map((row) => (Array.isArray(row) ? [...row] : []))
+      : instruments.map((instrument) =>
+          Array.from({ length: steps }, (_, index) =>
+            index % 4 === 0 ? instrument.token : ""
+          )
+        ),
+    enabledInstruments: Array.isArray(oldState.enabledInstruments)
+      ? [...oldState.enabledInstruments]
+      : [true, true, true, true]
   };
-
-  const migratedSaved = (oldData.saved || []).map((savedItem) => ({
-    id: savedItem.id || crypto.randomUUID(),
-    name: savedItem.name || "已存方案",
-    schemaVersion: 2,
-    sections: [{
-      id: crypto.randomUUID(),
-      name: savedItem.name || "段落 1",
-      bpm: savedItem.bpm || 96,
-      loop: savedItem.loop || "",
-      notes: savedItem.notes || [],
-      pattern: savedItem.pattern || instruments.map(() => Array(steps).fill("")),
-      enabledInstruments: savedItem.enabledInstruments || [true, true, true, true]
-    }],
-    currentSectionId: null,
-    continuousPlay: false,
-    createdAt: savedItem.createdAt || new Date().toISOString()
-  }));
-
   return {
-    schemaVersion: 2,
-    sections: [migratedSection],
-    currentSectionId: migratedSection.id,
+    pieceName: oldState.pieceName || "出场锣鼓-慢起",
+    sections: [section],
+    currentSectionId: section.id,
     continuousPlay: false,
-    continuousPlayIndex: 0,
-    saved: migratedSaved,
-    playCount: oldData.playCount || 0,
-    lastPlayedAt: oldData.lastPlayedAt || null,
-    recentPlayedSection: oldData.recentPlayedSection || ""
+    saved: deepCloneSavedList(oldState.saved),
+    playCount: oldState.playCount || 0,
+    lastPlayedAt: oldState.lastPlayedAt || null,
+    recentPlayedSection: oldState.recentPlayedSection || ""
   };
 }
 
 const storedState = JSON.parse(localStorage.getItem(storageKey) || "null");
 let state;
-
 if (storedState) {
-  const migrated = migrateOldData(storedState);
-  state = { ...defaultState, ...migrated };
+  const migrated = migrateOldFormat(storedState);
+  state = {
+    pieceName: migrated.pieceName,
+    sections: deepCloneSections(migrated.sections),
+    currentSectionId: migrated.currentSectionId,
+    continuousPlay: migrated.continuousPlay,
+    saved: deepCloneSavedList(migrated.saved),
+    playCount: migrated.playCount,
+    lastPlayedAt: migrated.lastPlayedAt,
+    recentPlayedSection: migrated.recentPlayedSection
+  };
   if (!state.currentSectionId && state.sections.length > 0) {
     state.currentSectionId = state.sections[0].id;
   }
 } else {
-  state = { ...defaultState };
+  state = {
+    pieceName: "出场锣鼓-慢起",
+    sections: deepCloneSections(defaultState.sections),
+    currentSectionId: null,
+    continuousPlay: false,
+    saved: [],
+    playCount: 0,
+    lastPlayedAt: null,
+    recentPlayedSection: ""
+  };
   state.currentSectionId = state.sections[0].id;
-}
-
-function getCurrentSection() {
-  return state.sections.find((s) => s.id === state.currentSectionId) || state.sections[0];
-}
-
-function getCurrentSectionIndex() {
-  return state.sections.findIndex((s) => s.id === state.currentSectionId);
 }
 
 let timer = null;
 let playhead = 0;
 let audioContext = null;
-let editingSectionId = null;
+let currentPlaySectionIndex = 0;
+let continuousPlaySectionCount = 0;
 
 const grid = document.querySelector("#grid");
 const savedList = document.querySelector("#savedList");
@@ -139,19 +189,16 @@ const importError = document.querySelector("#importError");
 const importPreview = document.querySelector("#importPreview");
 const previewGrid = document.querySelector("#previewGrid");
 const importSummary = document.querySelector("#importSummary");
-const sectionList = document.querySelector("#sectionList");
+const sectionsList = document.querySelector("#sectionsList");
 const addSectionBtn = document.querySelector("#addSectionBtn");
-const duplicateSectionBtn = document.querySelector("#duplicateSectionBtn");
-const deleteSectionBtn = document.querySelector("#deleteSectionBtn");
-const prevSectionBtn = document.querySelector("#prevSectionBtn");
-const nextSectionBtn = document.querySelector("#nextSectionBtn");
-const sectionIndicator = document.querySelector("#sectionIndicator");
-const currentSectionName = document.querySelector("#currentSectionName");
-const currentSectionBPM = document.querySelector("#currentSectionBPM");
-const continuousPlayBtn = document.querySelector("#continuousPlayBtn");
+const continuousPlayCheckbox = document.querySelector("#continuousPlay");
 
 let parsedPattern = null;
-let draggedSectionId = null;
+let editingSectionId = null;
+
+function getCurrentSection() {
+  return state.sections.find((s) => s.id === state.currentSectionId);
+}
 
 function save() {
   localStorage.setItem(storageKey, JSON.stringify(state));
@@ -159,184 +206,11 @@ function save() {
 
 function syncFields() {
   const section = getCurrentSection();
-  pieceName.value = section.name;
+  if (!section) return;
+  pieceName.value = state.pieceName;
   bpmInput.value = section.bpm;
   loopSelect.value = section.loop;
-}
-
-function renderSectionList() {
-  const currentIndex = getCurrentSectionIndex();
-  sectionList.innerHTML = state.sections.map((section, index) => {
-    const isActive = section.id === state.currentSectionId;
-    const isPlaying = state.continuousPlay && index === state.continuousPlayIndex && timer;
-    const filledCount = section.pattern.flat().filter(Boolean).length;
-    const loopText = section.loop !== "" ? `第${Number(section.loop) + 1}小节循环` : "全段";
-    
-    return `
-      <div class="section-item ${isActive ? "active" : ""} ${isPlaying ? "section-playing" : ""}" 
-           data-section-id="${section.id}" 
-           draggable="true">
-        <span class="section-drag-handle" data-drag-handle>⋮⋮</span>
-        <div class="section-order">${index + 1}</div>
-        <div class="section-info">
-          ${editingSectionId === section.id ? `
-            <input type="text" class="section-name-input" value="${section.name}" 
-                   data-section-name-input="${section.id}" autofocus>
-          ` : `
-            <div class="section-name">${section.name}</div>
-          `}
-          <div class="section-meta">
-            <span>${section.bpm} BPM</span>
-            <span class="dot"></span>
-            <span class="section-badge loop">${loopText}</span>
-            ${section.notes.length > 0 ? `<span class="dot"></span><span class="section-badge notes">${section.notes.length}条批注</span>` : ""}
-            <span class="dot"></span>
-            <span>${filledCount}/${instruments.length * steps} 口令</span>
-          </div>
-        </div>
-        <div class="section-item-actions">
-          <button type="button" class="section-icon-btn" data-rename-section="${section.id}" title="重命名">✎</button>
-          <button type="button" class="section-icon-btn" data-duplicate-section="${section.id}" title="复制">⧉</button>
-          <button type="button" class="section-icon-btn" data-delete-section="${section.id}" title="删除" ${state.sections.length <= 1 ? "disabled" : ""}>🗑</button>
-        </div>
-      </div>
-    `;
-  }).join("");
-
-  deleteSectionBtn.disabled = state.sections.length <= 1;
-}
-
-function renderScoreHeader() {
-  const section = getCurrentSection();
-  const currentIndex = getCurrentSectionIndex();
-  currentSectionName.textContent = section.name;
-  currentSectionBPM.textContent = `${section.bpm} BPM`;
-  sectionIndicator.textContent = `${currentIndex + 1} / ${state.sections.length}`;
-  prevSectionBtn.disabled = currentIndex <= 0;
-  nextSectionBtn.disabled = currentIndex >= state.sections.length - 1;
-  
-  continuousPlayBtn.classList.toggle("active", state.continuousPlay);
-  if (state.continuousPlay) {
-    continuousPlayBtn.innerHTML = `
-      <span class="continuous-play-indicator">
-        <span class="play-dot"></span>
-        连续播放中
-      </span>
-    `;
-  } else {
-    continuousPlayBtn.textContent = "连续播放";
-  }
-}
-
-function addSection() {
-  const currentSection = getCurrentSection();
-  const newSection = createEmptySection(`段落 ${state.sections.length + 1}`, currentSection.bpm);
-  state.sections.push(newSection);
-  state.currentSectionId = newSection.id;
-  save();
-  render();
-}
-
-function duplicateSection(sectionId) {
-  const section = state.sections.find((s) => s.id === sectionId);
-  if (!section) return;
-  
-  const newSection = {
-    ...section,
-    id: crypto.randomUUID(),
-    name: `${section.name} (副本)`,
-    notes: [...section.notes],
-    pattern: section.pattern.map((row) => [...row]),
-    enabledInstruments: [...section.enabledInstruments]
-  };
-  
-  const index = state.sections.findIndex((s) => s.id === sectionId);
-  state.sections.splice(index + 1, 0, newSection);
-  state.currentSectionId = newSection.id;
-  save();
-  render();
-}
-
-function deleteSection(sectionId) {
-  if (state.sections.length <= 1) return;
-  
-  const index = state.sections.findIndex((s) => s.id === sectionId);
-  if (index === -1) return;
-  
-  if (!confirm(`确定要删除段落「${state.sections[index].name}」吗？此操作不可撤销。`)) {
-    return;
-  }
-  
-  state.sections.splice(index, 1);
-  
-  if (state.currentSectionId === sectionId) {
-    state.currentSectionId = state.sections[Math.min(index, state.sections.length - 1)].id;
-  }
-  
-  if (state.continuousPlayIndex >= state.sections.length) {
-    state.continuousPlayIndex = state.sections.length - 1;
-  }
-  
-  save();
-  render();
-}
-
-function renameSection(sectionId, newName) {
-  const section = state.sections.find((s) => s.id === sectionId);
-  if (!section) return;
-  section.name = newName.trim() || "未命名段落";
-  save();
-  render();
-}
-
-function switchSection(sectionId) {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
-    document.querySelectorAll(".cell.playing").forEach((cell) => cell.classList.remove("playing"));
-  }
-  state.currentSectionId = sectionId;
-  playhead = 0;
-  save();
-  render();
-}
-
-function moveSection(dragId, dropId) {
-  if (dragId === dropId) return;
-  
-  const dragIndex = state.sections.findIndex((s) => s.id === dragId);
-  const dropIndex = state.sections.findIndex((s) => s.id === dropId);
-  
-  if (dragIndex === -1 || dropIndex === -1) return;
-  
-  const [removed] = state.sections.splice(dragIndex, 1);
-  state.sections.splice(dropIndex, 0, removed);
-  
-  save();
-  render();
-}
-
-function prevSection() {
-  const index = getCurrentSectionIndex();
-  if (index > 0) {
-    switchSection(state.sections[index - 1].id);
-  }
-}
-
-function nextSection() {
-  const index = getCurrentSectionIndex();
-  if (index < state.sections.length - 1) {
-    switchSection(state.sections[index + 1].id);
-  }
-}
-
-function toggleContinuousPlay() {
-  state.continuousPlay = !state.continuousPlay;
-  state.continuousPlayIndex = getCurrentSectionIndex();
-  save();
-  renderScoreHeader();
-  renderSectionList();
-  renderDashboard();
+  continuousPlayCheckbox.checked = state.continuousPlay;
 }
 
 function beatLabel(index) {
@@ -345,8 +219,46 @@ function beatLabel(index) {
   return `${measure}-${beat}`;
 }
 
+function renderSectionsList() {
+  sectionsList.innerHTML = state.sections
+    .map((section, index) => {
+      const isActive = section.id === state.currentSectionId;
+      const isEditing = editingSectionId === section.id;
+      const noteCount = section.notes.length;
+      const filledCount = section.pattern.flat().filter(Boolean).length;
+      return `
+        <div class="section-item ${isActive ? "active" : ""}" data-section-id="${section.id}">
+          <span class="section-order">${index + 1}</span>
+          <div class="section-info">
+            ${isEditing
+              ? `<input type="text" class="section-name-input" value="${section.name}" data-section-rename="${section.id}" autofocus>`
+              : `<div class="section-name">${section.name}</div>
+                 <div class="section-meta">${section.bpm}BPM · ${noteCount}条批注 · ${filledCount}个口令</div>`
+            }
+          </div>
+          <div class="section-item-btns">
+            <button type="button" class="section-item-btn" data-section-duplicate="${section.id}" title="复制段落">⎘</button>
+            <button type="button" class="section-item-btn" data-section-rename-btn="${section.id}" title="重命名">✎</button>
+            <button type="button" class="section-item-btn" data-section-delete="${section.id}" title="删除段落">✕</button>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+
+  if (editingSectionId) {
+    const input = sectionsList.querySelector(`[data-section-rename="${editingSectionId}"]`);
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }
+}
+
 function renderGrid() {
   const section = getCurrentSection();
+  if (!section) return;
+
   const header = ['<div class="label-cell">乐器</div>'];
   for (let i = 0; i < steps; i += 1) {
     header.push(`<div class="beat-cell">${beatLabel(i)}</div>`);
@@ -367,6 +279,8 @@ function renderGrid() {
 
 function renderVoicePanel() {
   const section = getCurrentSection();
+  if (!section) return;
+
   const allEnabled = section.enabledInstruments.every(Boolean);
   const voiceToggles = instruments.map((instrument, index) => {
     const enabled = section.enabledInstruments[index];
@@ -392,6 +306,8 @@ function renderVoicePanel() {
 
 function renderSidebars() {
   const section = getCurrentSection();
+  if (!section) return;
+
   const filledByMeasure = [0, 1, 2, 3].map((measure) => {
     const start = measure * 4;
     const count = section.pattern.flatMap((row) => row.slice(start, start + 4)).filter(Boolean).length;
@@ -406,21 +322,20 @@ function renderSidebars() {
   `).join("") : "<p>暂无批注。</p>";
 
   savedList.innerHTML = state.saved.length ? state.saved.map((item) => {
-    const sectionCount = item.sections ? item.sections.length : 1;
-    const firstBpm = item.sections ? item.sections[0].bpm : item.bpm;
-    const totalNotes = item.sections 
-      ? item.sections.reduce((sum, s) => sum + s.notes.length, 0)
-      : (item.notes ? item.notes.length : 0);
+    const sectionCount = item.sectionCount || (item.sections ? item.sections.length : 1);
+    const bpm = item.bpm || (item.sections && item.sections[0]?.bpm) || 96;
     return `
-      <button class="saved-item" type="button" data-load="${item.id}">
-        <strong>${item.name}</strong><br><span>${sectionCount}个段落 · ${firstBpm}BPM起 · ${totalNotes}条批注</span>
-      </button>
-    `;
+    <button class="saved-item" type="button" data-load="${item.id}">
+      <strong>${item.name}</strong><br><span>${sectionCount}个段落 · ${bpm}BPM</span>
+    </button>
+  `;
   }).join("") : "<p>还没有保存方案。</p>";
 }
 
 function getMeasureData() {
   const section = getCurrentSection();
+  if (!section) return [];
+
   return [0, 1, 2, 3].map((measure) => {
     const start = measure * 4;
     const cells = section.pattern.flatMap((row) => row.slice(start, start + 4));
@@ -461,6 +376,8 @@ function getFocusMeasures() {
 
 function getSuggestions() {
   const section = getCurrentSection();
+  if (!section) return [];
+
   const suggestions = [];
   const measures = getMeasureData();
   const focus = getFocusMeasures();
@@ -469,10 +386,8 @@ function getSuggestions() {
   const totalCells = measures.reduce((s, m) => s + m.total, 0);
   const totalRatio = totalCells ? totalFilled / totalCells : 0;
 
-  if (state.sections.length === 1) {
-    suggestions.push({ icon: "📋", html: `点击<strong>"+ 新增"</strong>添加更多段落，构建完整排练流程。` });
-  } else if (!state.continuousPlay) {
-    suggestions.push({ icon: "▶▶", html: `当前有 <strong>${state.sections.length}</strong> 个段落，可开启<strong>连续播放</strong>按顺序演练。` });
+  if (state.sections.length > 1) {
+    suggestions.push({ icon: "📋", html: `当前共 <strong>${state.sections.length}</strong> 个段落，可开启<strong>连续播放</strong>按顺序排练。` });
   }
 
   if (totalRatio < 0.3) {
@@ -537,6 +452,8 @@ function formatTimeAgo(isoString) {
 
 function renderDashboard() {
   const section = getCurrentSection();
+  if (!section) return;
+
   const now = new Date();
   dashboardTime.textContent = `${now.toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" })} ${now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
 
@@ -547,8 +464,7 @@ function renderDashboard() {
   completionPercent.textContent = `${percent}%`;
   completionDetail.textContent = `${filledCells}/${totalCells} 个口令`;
 
-  const totalNotes = state.sections.reduce((sum, s) => sum + s.notes.length, 0);
-  difficultyCount.textContent = totalNotes;
+  difficultyCount.textContent = section.notes.length;
   savedCount.textContent = state.saved.length;
   playCount.textContent = state.playCount || 0;
 
@@ -589,14 +505,12 @@ function renderDashboard() {
 
   const statusDot = timer ? `<span class="play-status"><span class="play-dot active"></span>正在播放</span>` : `<span class="play-status"><span class="play-dot"></span>${formatTimeAgo(state.lastPlayedAt)}</span>`;
   const sectionText = state.recentPlayedSection ? ` · ${state.recentPlayedSection}` : "";
-  const continuousText = state.continuousPlay ? ` · ${state.sections.length}个段落` : "";
-  lastPlay.innerHTML = `${statusDot}<span>${state.playCount ? `共 ${state.playCount} 次${sectionText}${continuousText}` : "等待开始"}</span>`;
+  lastPlay.innerHTML = `${statusDot}<span>${state.playCount ? `共 ${state.playCount} 次${sectionText}` : "等待开始"}</span>`;
 }
 
 function render() {
+  renderSectionsList();
   syncFields();
-  renderSectionList();
-  renderScoreHeader();
   renderGrid();
   renderVoicePanel();
   renderSidebars();
@@ -721,6 +635,8 @@ function hideError() {
 
 function renderPreview(parsed) {
   const section = getCurrentSection();
+  if (!section) return;
+
   const { pattern, warnings, measureCount } = parsed;
   const totalFilled = pattern.flat().filter(Boolean).length;
 
@@ -811,8 +727,9 @@ function resetImportState() {
 
 function applyParsedPattern() {
   if (!parsedPattern) return;
-
   const section = getCurrentSection();
+  if (!section) return;
+
   let filledCount = 0;
   let skippedCount = 0;
 
@@ -861,51 +778,38 @@ function highlight(step) {
   document.querySelectorAll(`[data-step="${step}"]`).forEach((cell) => cell.classList.add("playing"));
 }
 
-function currentRange(section = null) {
-  const targetSection = section || getCurrentSection();
-  if (targetSection.loop === "") return [0, steps - 1];
-  const start = Number(targetSection.loop) * 4;
+function currentRange(section) {
+  const sec = section || getCurrentSection();
+  if (!sec) return [0, steps - 1];
+  if (sec.loop === "") return [0, steps - 1];
+  const start = Number(sec.loop) * 4;
   return [start, start + 3];
 }
 
-function tick() {
+function getPlaySection() {
   if (state.continuousPlay) {
-    continuousTick();
-  } else {
-    singleTick();
+    return state.sections[currentPlaySectionIndex];
   }
+  return getCurrentSection();
 }
 
-function singleTick() {
-  const section = getCurrentSection();
+function tick() {
+  const section = getPlaySection();
+  if (!section) return;
+
   const [start, end] = currentRange(section);
   if (playhead < start || playhead > end) playhead = start;
-  highlight(playhead);
-  instruments.forEach((instrument, rowIndex) => {
-    if (section.enabledInstruments[rowIndex] && section.pattern[rowIndex][playhead]) {
-      playSound(instrument);
+
+  if (state.continuousPlay && state.sections.length > 1) {
+    const currentSection = state.sections[currentPlaySectionIndex];
+    if (currentSection && currentSection.id !== getCurrentSection()?.id) {
+      state.currentSectionId = currentSection.id;
+      renderSectionsList();
+      renderGrid();
+      renderVoicePanel();
+      renderSidebars();
+      renderDashboard();
     }
-  });
-  playhead = playhead >= end ? start : playhead + 1;
-}
-
-function continuousTick() {
-  const section = state.sections[state.continuousPlayIndex];
-  if (!section) {
-    stopPlayback();
-    return;
-  }
-
-  const [start, end] = currentRange(section);
-  if (playhead < start || playhead > end) playhead = start;
-
-  if (state.currentSectionId !== section.id) {
-    state.currentSectionId = section.id;
-    renderGrid();
-    renderVoicePanel();
-    renderSidebars();
-    renderScoreHeader();
-    renderSectionList();
   }
 
   highlight(playhead);
@@ -916,61 +820,95 @@ function continuousTick() {
   });
 
   if (playhead >= end) {
-    if (state.continuousPlayIndex < state.sections.length - 1) {
-      state.continuousPlayIndex++;
-      playhead = 0;
-      if (timer) {
-        clearInterval(timer);
-        const nextSection = state.sections[state.continuousPlayIndex];
-        timer = setInterval(tick, 60000 / nextSection.bpm);
+    if (state.continuousPlay && state.sections.length > 1) {
+      const nextIndex = currentPlaySectionIndex + 1;
+      if (nextIndex < state.sections.length) {
+        currentPlaySectionIndex = nextIndex;
+        continuousPlaySectionCount++;
+        playhead = currentRange(state.sections[nextIndex])[0];
+        const nextSection = state.sections[nextIndex];
+        if (nextSection.bpm !== section.bpm) {
+          clearInterval(timer);
+          timer = setInterval(tick, 60000 / nextSection.bpm);
+        }
+        return;
+      } else {
+        stopPlayback();
+        return;
       }
-      renderSectionList();
-      renderScoreHeader();
     } else {
-      stopPlayback();
+      playhead = start;
     }
   } else {
-    playhead++;
+    playhead = playhead + 1;
   }
 }
 
-function stopPlayback() {
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
+function startPlayback() {
+  if (timer) clearInterval(timer);
+
+  const section = getPlaySection();
+  if (!section) return;
+
+  if (state.continuousPlay) {
+    currentPlaySectionIndex = 0;
+    continuousPlaySectionCount = 0;
+    state.currentSectionId = state.sections[0].id;
+    renderSectionsList();
   }
-  document.querySelectorAll(".cell.playing").forEach((cell) => cell.classList.remove("playing"));
-  state.continuousPlayIndex = 0;
+
+  playhead = currentRange(section)[0];
+  state.playCount = (state.playCount || 0) + 1;
+  state.lastPlayedAt = new Date().toISOString();
+
+  if (state.continuousPlay && state.sections.length > 1) {
+    state.recentPlayedSection = `连续播放 ${state.sections.length} 个段落`;
+  } else {
+    state.recentPlayedSection = section.loop === "" ? "全段播放" : `第${Number(section.loop) + 1}小节循环`;
+  }
+
+  save();
+  tick();
+  timer = setInterval(tick, 60000 / section.bpm);
   renderDashboard();
-  renderSectionList();
-  renderScoreHeader();
+  renderGrid();
+}
+
+function stopPlayback() {
+  clearInterval(timer);
+  timer = null;
+  document.querySelectorAll(".cell.playing").forEach((cell) => cell.classList.remove("playing"));
+
+  if (state.continuousPlay && state.sections.length > 1) {
+    playhead = 0;
+    currentPlaySectionIndex = 0;
+  }
+
+  renderDashboard();
 }
 
 grid.addEventListener("click", (event) => {
   const cell = event.target.closest(".cell");
   if (!cell) return;
+  const section = getCurrentSection();
+  if (!section) return;
   const row = Number(cell.dataset.row);
   const step = Number(cell.dataset.step);
-  const section = getCurrentSection();
   section.pattern[row][step] = section.pattern[row][step] ? "" : instruments[row].token;
   save();
   render();
 });
 
 pieceName.addEventListener("input", () => {
-  const section = getCurrentSection();
-  section.name = pieceName.value;
+  state.pieceName = pieceName.value;
   save();
-  renderScoreHeader();
-  renderSectionList();
 });
 
 bpmInput.addEventListener("input", () => {
   const section = getCurrentSection();
+  if (!section) return;
   section.bpm = Number(bpmInput.value || 96);
   save();
-  renderScoreHeader();
-  renderSectionList();
   if (timer && !state.continuousPlay) {
     clearInterval(timer);
     timer = setInterval(tick, 60000 / section.bpm);
@@ -979,157 +917,37 @@ bpmInput.addEventListener("input", () => {
 
 loopSelect.addEventListener("change", () => {
   const section = getCurrentSection();
+  if (!section) return;
   section.loop = loopSelect.value;
   playhead = currentRange(section)[0];
   save();
-  renderSectionList();
 });
 
 noteInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || !noteInput.value.trim()) return;
   const section = getCurrentSection();
+  if (!section) return;
   section.notes.unshift(noteInput.value.trim());
   noteInput.value = "";
   save();
   render();
 });
 
-document.querySelector("#playBtn").addEventListener("click", () => {
-  if (timer) clearInterval(timer);
-  
-  const startSection = state.continuousPlay ? state.sections[state.continuousPlayIndex] : getCurrentSection();
-  playhead = currentRange(startSection)[0];
-  
-  state.playCount = (state.playCount || 0) + 1;
-  state.lastPlayedAt = new Date().toISOString();
-  
-  if (state.continuousPlay) {
-    state.recentPlayedSection = `连续播放 ${state.sections.length} 个段落`;
-  } else {
-    const section = getCurrentSection();
-    state.recentPlayedSection = section.loop === "" ? "全段播放" : `第${Number(section.loop) + 1}小节循环`;
-  }
-  
-  save();
-  tick();
-  timer = setInterval(tick, 60000 / startSection.bpm);
-  renderDashboard();
-  renderSectionList();
-});
-
+document.querySelector("#playBtn").addEventListener("click", startPlayback);
 document.querySelector("#stopBtn").addEventListener("click", stopPlayback);
 
-continuousPlayBtn.addEventListener("click", toggleContinuousPlay);
-
-addSectionBtn.addEventListener("click", addSection);
-duplicateSectionBtn.addEventListener("click", () => {
-  duplicateSection(state.currentSectionId);
-});
-deleteSectionBtn.addEventListener("click", () => {
-  deleteSection(state.currentSectionId);
-});
-prevSectionBtn.addEventListener("click", prevSection);
-nextSectionBtn.addEventListener("click", nextSection);
-
-sectionList.addEventListener("click", (event) => {
-  const renameId = event.target.closest("[data-rename-section]")?.dataset.renameSection;
-  const duplicateId = event.target.closest("[data-duplicate-section]")?.dataset.duplicateSection;
-  const deleteId = event.target.closest("[data-delete-section]")?.dataset.deleteSection;
-  const sectionItem = event.target.closest("[data-section-id]");
-  
-  if (renameId) {
-    event.stopPropagation();
-    editingSectionId = renameId;
-    renderSectionList();
-    const input = document.querySelector(`[data-section-name-input="${renameId}"]`);
-    if (input) {
-      input.focus();
-      input.select();
-    }
-  } else if (duplicateId) {
-    event.stopPropagation();
-    duplicateSection(duplicateId);
-  } else if (deleteId) {
-    event.stopPropagation();
-    deleteSection(deleteId);
-  } else if (sectionItem && !event.target.closest("[data-drag-handle]")) {
-    switchSection(sectionItem.dataset.sectionId);
-  }
-});
-
-sectionList.addEventListener("keydown", (event) => {
-  const input = event.target.closest("[data-section-name-input]");
-  if (!input) return;
-  
-  const sectionId = input.dataset.sectionNameInput;
-  if (event.key === "Enter") {
-    event.preventDefault();
-    renameSection(sectionId, input.value);
-    editingSectionId = null;
-  } else if (event.key === "Escape") {
-    event.preventDefault();
-    editingSectionId = null;
-    renderSectionList();
-  }
-});
-
-sectionList.addEventListener("blur", (event) => {
-  const input = event.target.closest("[data-section-name-input]");
-  if (!input) return;
-  const sectionId = input.dataset.sectionNameInput;
-  renameSection(sectionId, input.value);
-  editingSectionId = null;
-}, true);
-
-sectionList.addEventListener("dragstart", (event) => {
-  const item = event.target.closest("[data-section-id]");
-  if (!item) return;
-  draggedSectionId = item.dataset.sectionId;
-  item.classList.add("dragging");
-  event.dataTransfer.effectAllowed = "move";
-});
-
-sectionList.addEventListener("dragend", (event) => {
-  const item = event.target.closest("[data-section-id]");
-  if (item) item.classList.remove("dragging");
-  document.querySelectorAll(".drag-over").forEach((el) => el.classList.remove("drag-over"));
-  draggedSectionId = null;
-});
-
-sectionList.addEventListener("dragover", (event) => {
-  event.preventDefault();
-  const item = event.target.closest("[data-section-id]");
-  if (!item || item.dataset.sectionId === draggedSectionId) return;
-  document.querySelectorAll(".drag-over").forEach((el) => el.classList.remove("drag-over"));
-  item.classList.add("drag-over");
-});
-
-sectionList.addEventListener("drop", (event) => {
-  event.preventDefault();
-  const item = event.target.closest("[data-section-id]");
-  if (!item || !draggedSectionId) return;
-  moveSection(draggedSectionId, item.dataset.sectionId);
-});
-
 document.querySelector("#saveBtn").addEventListener("click", () => {
-  const firstSection = state.sections[0];
-  state.saved.unshift({
+  const savedData = {
     id: crypto.randomUUID(),
-    name: firstSection.name || "未命名方案",
-    schemaVersion: 2,
-    sections: state.sections.map((s) => ({
-      id: crypto.randomUUID(),
-      name: s.name,
-      bpm: s.bpm,
-      loop: s.loop,
-      notes: [...s.notes],
-      pattern: s.pattern.map((row) => [...row]),
-      enabledInstruments: [...s.enabledInstruments]
-    })),
-    currentSectionId: null,
-    continuousPlay: state.continuousPlay,
+    name: state.pieceName || "未命名方案",
+    bpm: getCurrentSection()?.bpm || 96,
+    sectionCount: state.sections.length,
+    pieceName: state.pieceName,
+    sections: deepCloneSections(state.sections),
+    currentSectionId: state.currentSectionId,
     createdAt: new Date().toISOString()
-  });
+  };
+  state.saved.unshift(savedData);
   save();
   render();
 });
@@ -1138,22 +956,26 @@ savedList.addEventListener("click", (event) => {
   const id = event.target.closest("[data-load]")?.dataset.load;
   const item = state.saved.find((entry) => entry.id === id);
   if (!item) return;
-  
-  if (timer) stopPlayback();
-  
-  if (item.schemaVersion === 2 && Array.isArray(item.sections)) {
-    state.sections = item.sections.map((s) => ({ ...s, id: crypto.randomUUID() }));
-    state.currentSectionId = state.sections[0].id;
-    state.continuousPlay = item.continuousPlay || false;
+
+  if (item.sections && Array.isArray(item.sections)) {
+    state.pieceName = item.pieceName || item.name;
+    state.sections = deepCloneSections(item.sections);
+    state.currentSectionId = item.currentSectionId || state.sections[0].id;
   } else {
-    const migrated = migrateOldData(item);
-    state.sections = migrated.sections.map((s) => ({ ...s, id: crypto.randomUUID() }));
-    state.currentSectionId = state.sections[0].id;
-    state.continuousPlay = false;
+    const section = deepCloneSection({
+      id: crypto.randomUUID(),
+      name: item.name,
+      bpm: item.bpm,
+      loop: item.loop || "",
+      notes: item.notes,
+      pattern: item.pattern,
+      enabledInstruments: item.enabledInstruments
+    });
+    state.pieceName = item.name;
+    state.sections = [section];
+    state.currentSectionId = section.id;
   }
-  
-  state.continuousPlayIndex = 0;
-  playhead = 0;
+
   save();
   render();
 });
@@ -1162,6 +984,7 @@ voicePanel.addEventListener("change", (event) => {
   const voiceIndex = event.target.closest("[data-voice]")?.dataset.voice;
   if (voiceIndex === undefined) return;
   const section = getCurrentSection();
+  if (!section) return;
   section.enabledInstruments[Number(voiceIndex)] = event.target.checked;
   save();
   render();
@@ -1170,8 +993,9 @@ voicePanel.addEventListener("change", (event) => {
 voicePanel.addEventListener("click", (event) => {
   const allBtn = event.target.closest("[data-voice-all]");
   if (!allBtn) return;
-  const action = allBtn.dataset.voiceAll;
   const section = getCurrentSection();
+  if (!section) return;
+  const action = allBtn.dataset.voiceAll;
   section.enabledInstruments = section.enabledInstruments.map(() => action === "on");
   save();
   render();
@@ -1222,6 +1046,118 @@ const tokenRefPanel = document.querySelector("#tokenRefPanel");
 toggleRefBtn.addEventListener("click", () => {
   const isOpen = tokenRefPanel.classList.toggle("open");
   toggleRefBtn.textContent = isOpen ? "收起对照表 ▴" : "查看完整对照表 ▾";
+});
+
+sectionsList.addEventListener("click", (event) => {
+  const sectionItem = event.target.closest(".section-item");
+  const duplicateBtn = event.target.closest("[data-section-duplicate]");
+  const deleteBtn = event.target.closest("[data-section-delete]");
+  const renameBtn = event.target.closest("[data-section-rename-btn]");
+
+  if (duplicateBtn) {
+    event.stopPropagation();
+    const id = duplicateBtn.dataset.sectionDuplicate;
+    const section = state.sections.find((s) => s.id === id);
+    if (section) {
+      const newSection = deepCloneSection(section);
+      newSection.id = crypto.randomUUID();
+      newSection.name = `${section.name} (副本)`;
+      const index = state.sections.findIndex((s) => s.id === id);
+      state.sections.splice(index + 1, 0, newSection);
+      state.currentSectionId = newSection.id;
+      save();
+      render();
+    }
+    return;
+  }
+
+  if (deleteBtn) {
+    event.stopPropagation();
+    const id = deleteBtn.dataset.sectionDelete;
+    if (state.sections.length <= 1) {
+      alert("至少需要保留一个段落。");
+      return;
+    }
+    if (!confirm("确定要删除这个段落吗？")) return;
+    const index = state.sections.findIndex((s) => s.id === id);
+    state.sections.splice(index, 1);
+    if (state.currentSectionId === id) {
+      state.currentSectionId = state.sections[Math.max(0, index - 1)].id;
+    }
+    save();
+    render();
+    return;
+  }
+
+  if (renameBtn) {
+    event.stopPropagation();
+    const id = renameBtn.dataset.sectionRenameBtn;
+    editingSectionId = id;
+    renderSectionsList();
+    return;
+  }
+
+  if (sectionItem && !event.target.closest(".section-item-btns")) {
+    const id = sectionItem.dataset.sectionId;
+    state.currentSectionId = id;
+    playhead = 0;
+    save();
+    render();
+  }
+});
+
+sectionsList.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target.classList.contains("section-name-input")) {
+    const id = event.target.dataset.sectionRename;
+    const newName = event.target.value.trim();
+    if (newName && id) {
+      const section = state.sections.find((s) => s.id === id);
+      if (section) {
+        section.name = newName;
+        save();
+      }
+    }
+    editingSectionId = null;
+    render();
+  }
+  if (event.key === "Escape" && event.target.classList.contains("section-name-input")) {
+    editingSectionId = null;
+    render();
+  }
+});
+
+sectionsList.addEventListener("blur", (event) => {
+  if (event.target.classList.contains("section-name-input")) {
+    const id = event.target.dataset.sectionRename;
+    const newName = event.target.value.trim();
+    if (newName && id) {
+      const section = state.sections.find((s) => s.id === id);
+      if (section) {
+        section.name = newName;
+        save();
+      }
+    }
+    editingSectionId = null;
+    render();
+  }
+}, true);
+
+addSectionBtn.addEventListener("click", () => {
+  const newSection = createDefaultSection(`段落 ${state.sections.length + 1}`);
+  state.sections.push(newSection);
+  state.currentSectionId = newSection.id;
+  playhead = 0;
+  save();
+  render();
+});
+
+continuousPlayCheckbox.addEventListener("change", () => {
+  state.continuousPlay = continuousPlayCheckbox.checked;
+  if (timer) {
+    stopPlayback();
+  }
+  save();
+  renderDashboard();
 });
 
 render();

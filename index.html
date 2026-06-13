@@ -16,13 +16,16 @@
       <div class="transport">
         <button id="playBtn" type="button">播放</button>
         <button id="stopBtn" type="button">停止</button>
-        <button id="continuousPlayBtn" type="button" class="secondary-btn">连续播放</button>
+        <label class="continuous-toggle">
+          <input type="checkbox" id="continuousPlay">
+          <span>连续播放</span>
+        </label>
         <button id="saveBtn" type="button">保存方案</button>
       </div>
     </header>
 
     <section class="controls">
-      <label>段落名称<input id="pieceName" placeholder="如：出场锣鼓-慢起"></label>
+      <label>剧目片段<input id="pieceName" placeholder="如：出场锣鼓-慢起"></label>
       <label>速度BPM<input id="bpmInput" type="number" min="40" max="220" value="96"></label>
       <label>循环小节
         <select id="loopSelect">
@@ -34,18 +37,6 @@
         </select>
       </label>
       <label>难点批注<input id="noteInput" placeholder="如：第2小节小锣晚半拍"></label>
-    </section>
-
-    <section class="section-manager" id="sectionManager">
-      <div class="section-header">
-        <h2>排练段落编排</h2>
-        <div class="section-actions">
-          <button type="button" id="addSectionBtn" class="section-action-btn" title="新增段落">+ 新增</button>
-          <button type="button" id="duplicateSectionBtn" class="section-action-btn" title="复制当前段落">⧉ 复制</button>
-          <button type="button" id="deleteSectionBtn" class="section-action-btn danger" title="删除当前段落">🗑 删除</button>
-        </div>
-      </div>
-      <div class="section-list" id="sectionList"></div>
     </section>
 
     <section class="command-import" id="commandImport">
@@ -157,22 +148,19 @@
 
     <section class="stage">
       <aside class="segments">
-        <h2>已存方案</h2>
-        <div id="savedList"></div>
-      </aside>
-      <section class="score">
-        <div class="score-header">
-          <div class="current-section-info">
-            <span class="current-section-label">当前段落：</span>
-            <span class="current-section-name" id="currentSectionName">段落 1</span>
-            <span class="current-section-bpm" id="currentSectionBPM">96 BPM</span>
-          </div>
-          <div class="section-nav">
-            <button type="button" id="prevSectionBtn" class="nav-btn" title="上一段">◀</button>
-            <span class="section-indicator" id="sectionIndicator">1 / 1</span>
-            <button type="button" id="nextSectionBtn" class="nav-btn" title="下一段">▶</button>
+        <div class="section-header">
+          <h2>段落编排</h2>
+          <div class="section-actions">
+            <button id="addSectionBtn" type="button" title="新增段落">+</button>
           </div>
         </div>
+        <div id="sectionsList" class="sections-list"></div>
+        <div class="saved-section">
+          <h2>已存方案</h2>
+          <div id="savedList"></div>
+        </div>
+      </aside>
+      <section class="score">
         <div id="grid" class="grid"></div>
       </section>
       <aside class="notes">
