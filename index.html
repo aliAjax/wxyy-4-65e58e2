@@ -105,6 +105,66 @@
       </div>
     </section>
 
+    <section class="scheme-import-export" id="schemeImportExport">
+      <div class="scheme-ie-header">
+        <h2>谱面导入导出</h2>
+        <p class="scheme-ie-hint">
+          支持将当前排练方案导出为 JSON 文件备份，或从本地文件导入方案。导入前会预览方案信息，确认后才会覆盖当前内容。
+        </p>
+      </div>
+      <div class="scheme-ie-body">
+        <div class="scheme-ie-actions">
+          <button type="button" class="scheme-export-btn" id="schemeExportBtn">📤 导出当前方案</button>
+          <label class="scheme-import-btn">
+            <span>📥 从文件导入方案</span>
+            <input type="file" id="schemeFileInput" accept=".json,application/json" style="display:none;">
+          </label>
+          <button type="button" class="scheme-import-list-btn" id="schemeImportListBtn">💾 导入到已存方案列表</button>
+        </div>
+        <div class="scheme-ie-error" id="schemeIeError" style="display: none;"></div>
+        <div class="scheme-ie-preview" id="schemeIePreview" style="display: none;">
+          <div class="preview-header">
+            <h3>导入预览</h3>
+            <span class="preview-warning">⚠️ 请仔细核对以下信息，确认后将覆盖当前内容</span>
+          </div>
+          <div class="scheme-info-grid">
+            <div class="scheme-info-item">
+              <span class="scheme-info-label">方案名称</span>
+              <span class="scheme-info-value" id="previewSchemeName">-</span>
+            </div>
+            <div class="scheme-info-item">
+              <span class="scheme-info-label">BPM</span>
+              <span class="scheme-info-value" id="previewSchemeBpm">-</span>
+            </div>
+            <div class="scheme-info-item">
+              <span class="scheme-info-label">批注数</span>
+              <span class="scheme-info-value" id="previewSchemeNotes">-</span>
+            </div>
+            <div class="scheme-info-item">
+              <span class="scheme-info-label">网格尺寸</span>
+              <span class="scheme-info-value" id="previewSchemeGrid">-</span>
+            </div>
+            <div class="scheme-info-item">
+              <span class="scheme-info-label">段落数</span>
+              <span class="scheme-info-value" id="previewSchemeSections">-</span>
+            </div>
+            <div class="scheme-info-item">
+              <span class="scheme-info-label">文件版本</span>
+              <span class="scheme-info-value" id="previewSchemeVersion">-</span>
+            </div>
+          </div>
+          <div class="scheme-compatibility" id="schemeCompatibility" style="display: none;">
+            <div class="compatibility-title">兼容性检查</div>
+            <div class="compatibility-list" id="compatibilityList"></div>
+          </div>
+          <div class="scheme-ie-confirm-actions">
+            <button type="button" class="scheme-confirm-btn" id="schemeConfirmBtn" disabled>✓ 确认导入</button>
+            <button type="button" class="scheme-cancel-btn" id="schemeCancelBtn">✕ 取消</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="voice-controls" id="voicePanel"></section>
 
     <section class="dashboard" id="dashboard">

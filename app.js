@@ -265,9 +265,28 @@ const continuousPlayCheckbox = document.querySelector("#continuousPlay");
 const rehearsalTimelineBody = document.querySelector("#rehearsalTimelineBody");
 const rehearsalCount = document.querySelector("#rehearsalCount");
 const rehearsalClearBtn = document.querySelector("#rehearsalClearBtn");
+const schemeExportBtn = document.querySelector("#schemeExportBtn");
+const schemeFileInput = document.querySelector("#schemeFileInput");
+const schemeImportListBtn = document.querySelector("#schemeImportListBtn");
+const schemeIeError = document.querySelector("#schemeIeError");
+const schemeIePreview = document.querySelector("#schemeIePreview");
+const previewSchemeName = document.querySelector("#previewSchemeName");
+const previewSchemeBpm = document.querySelector("#previewSchemeBpm");
+const previewSchemeNotes = document.querySelector("#previewSchemeNotes");
+const previewSchemeGrid = document.querySelector("#previewSchemeGrid");
+const previewSchemeSections = document.querySelector("#previewSchemeSections");
+const previewSchemeVersion = document.querySelector("#previewSchemeVersion");
+const schemeCompatibility = document.querySelector("#schemeCompatibility");
+const compatibilityList = document.querySelector("#compatibilityList");
+const schemeConfirmBtn = document.querySelector("#schemeConfirmBtn");
+const schemeCancelBtn = document.querySelector("#schemeCancelBtn");
 
-let parsedPattern = null;
-let editingSectionId = null;
+const SCHEMA_VERSION = 2;
+const SUPPORTED_VERSIONS = [1, 2];
+
+let parsedSchemeData = null;
+let parsedSchemeIsImportToList = false;
+let parsedSchemeCompatibility = null;
 
 function getCurrentSection() {
   return state.sections.find((s) => s.id === state.currentSectionId);
@@ -1440,6 +1459,453 @@ rehearsalClearBtn.addEventListener("click", () => {
   saveRehearsalLog();
   renderRehearsalTimeline();
 });
+
+function buildExportData() {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    pieceName: state.pieceName,
+    sections: deepCloneSections(state.sections),
+    currentSectionId: state.currentSectionId,
+    continuousPlay: state.continuousPlay,
+    saved: deepCloneSavedList(state.saved),
+    appInfo: {
+      name: "传统戏曲锣鼓经排练可视化",
+      version: "1.0.0"
+    }
+  };
+}
+
+function exportScheme() {
+  try {
+    const exportData = buildExportData();
+    const jsonStr = JSON.stringify(exportData, null, 2);
+    const blob = new Blob([jsonStr], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const safeName = (state.pieceName || "未命名方案").replace(/[<>:"/\\|?*]/g, "_");
+    const dateStr = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `${safeName}_${dateStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showSchemeSuccess("方案已成功导出！");
+  } catch (error) {
+    showSchemeError(`导出失败：${error.message}`);
+  }
+}
+
+function showSchemeError(message) {
+  schemeIeError.innerHTML = `<strong>⚠️ 错误：</strong>${message}`;
+  schemeIeError.style.display = "block";
+}
+
+function showSchemeSuccess(message) {
+  schemeIeError.innerHTML = `<strong>✓ 成功：</strong><span style="color:#047857;">${message}</span>`;
+  schemeIeError.style.display = "block";
+}
+
+function hideSchemeError() {
+  schemeIeError.style.display = "none";
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.onerror = () => reject(new Error("文件读取失败"));
+    reader.readAsText(file);
+  });
+}
+
+async function parseSchemeFile(file) {
+  if (!file) {
+    throw new Error("请选择一个文件。");
+  }
+  if (file.type && !file.type.includes("json") && !file.name.endsWith(".json")) {
+    throw new Error("文件格式不正确，请选择 .json 文件。");
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    throw new Error("文件过大（超过 5MB），请选择较小的文件。");
+  }
+
+  let text;
+  try {
+    text = await readFileAsText(file);
+  } catch (error) {
+    throw new Error(`文件读取失败：${error.message}。文件可能已损坏。`);
+  }
+
+  if (!text || !text.trim()) {
+    throw new Error("文件为空，无法解析。");
+  }
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    const pos = error.message.match(/position (\d+)/);
+    const posInfo = pos ? `（位置 ${pos[1]}）` : "";
+    throw new Error(`JSON 解析失败${posInfo}：文件格式不正确或已损坏。<br>请确保文件是有效的 JSON 格式。`);
+  }
+
+  return data;
+}
+
+function validateAndMigrateScheme(data) {
+  const compatibility = {
+    issues: [],
+    warnings: [],
+    infos: [],
+    errors: [],
+    migrated: false,
+    canImport: true
+  };
+
+  if (!data || typeof data !== "object") {
+    compatibility.errors.push("数据格式无效，不是一个对象。");
+    compatibility.canImport = false;
+    return { data, compatibility };
+  }
+
+  const fileVersion = data.schemaVersion || 1;
+  compatibility.infos.push(`文件数据版本：v${fileVersion}`);
+
+  if (!SUPPORTED_VERSIONS.includes(fileVersion)) {
+    compatibility.errors.push(`不支持的文件版本 v${fileVersion}。当前支持的版本：v${SUPPORTED_VERSIONS.join("、v")}。`);
+    compatibility.canImport = false;
+    return { data, compatibility };
+  }
+
+  if (fileVersion < SCHEMA_VERSION) {
+    compatibility.warnings.push(`文件版本较旧（v${fileVersion}），将自动迁移到当前版本 v${SCHEMA_VERSION}。`);
+    compatibility.migrated = true;
+  } else if (fileVersion > SCHEMA_VERSION) {
+    compatibility.warnings.push(`文件版本 v${fileVersion} 高于当前版本 v${SCHEMA_VERSION}，部分字段可能无法识别。`);
+  }
+
+  let migratedData = { ...data };
+
+  if (!migratedData.sections || !Array.isArray(migratedData.sections)) {
+    if (migratedData.pattern) {
+      compatibility.warnings.push("检测到旧版单段落格式，正在转换为多段落格式。");
+      migratedData = migrateOldFormat(migratedData);
+      compatibility.migrated = true;
+    } else {
+      compatibility.errors.push("缺少必要字段：sections（段落数据）。");
+      compatibility.canImport = false;
+      return { data: migratedData, compatibility };
+    }
+  }
+
+  if (migratedData.sections.length === 0) {
+    compatibility.errors.push("段落数据为空，至少需要一个段落。");
+    compatibility.canImport = false;
+    return { data: migratedData, compatibility };
+  }
+
+  const requiredSectionFields = ["id", "name", "bpm", "pattern"];
+  migratedData.sections.forEach((section, idx) => {
+    if (!section || typeof section !== "object") {
+      compatibility.errors.push(`第 ${idx + 1} 个段落格式无效。`);
+      compatibility.canImport = false;
+      return;
+    }
+    requiredSectionFields.forEach((field) => {
+      if (!(field in section)) {
+        compatibility.warnings.push(`第 ${idx + 1} 个段落缺少字段「${field}」，将使用默认值。`);
+      }
+    });
+    if (!section.id) {
+      section.id = crypto.randomUUID();
+      compatibility.warnings.push(`第 ${idx + 1} 个段落 ID 缺失，已自动生成。`);
+    }
+    if (!section.pattern || !Array.isArray(section.pattern)) {
+      compatibility.errors.push(`第 ${idx + 1} 个段落缺少有效的 pattern 数据。`);
+      compatibility.canImport = false;
+    } else if (section.pattern.length !== instruments.length) {
+      compatibility.warnings.push(`第 ${idx + 1} 个段落乐器数量不匹配，将自动调整。`);
+    }
+  });
+
+  if (!migratedData.pieceName) {
+    migratedData.pieceName = "导入的方案";
+    compatibility.infos.push("方案名称缺失，已使用默认名称。");
+  }
+
+  if (!migratedData.currentSectionId && migratedData.sections.length > 0) {
+    migratedData.currentSectionId = migratedData.sections[0].id;
+    compatibility.infos.push("当前段落 ID 缺失，已设置为第一个段落。");
+  }
+
+  if (migratedData.saved && Array.isArray(migratedData.saved)) {
+    const savedIds = new Set();
+    const duplicateIds = [];
+    migratedData.saved.forEach((item, idx) => {
+      if (item && item.id) {
+        if (savedIds.has(item.id)) {
+          duplicateIds.push(item.id);
+          item.id = crypto.randomUUID();
+          compatibility.warnings.push(`已存方案第 ${idx + 1} 个 ID 重复，已自动重新生成。`);
+        } else {
+          savedIds.add(item.id);
+        }
+      }
+    });
+
+    if (state.saved && state.saved.length > 0) {
+      const existingIds = new Set(state.saved.map((s) => s.id));
+      let conflictCount = 0;
+      migratedData.saved.forEach((item) => {
+        if (item && item.id && existingIds.has(item.id)) {
+          item.id = crypto.randomUUID();
+          conflictCount++;
+        }
+      });
+      if (conflictCount > 0) {
+        compatibility.warnings.push(`检测到 ${conflictCount} 个已存方案 ID 与本地冲突，已自动重新生成。`);
+      }
+    }
+  }
+
+  const currentSectionIds = new Set(migratedData.sections.map((s) => s.id));
+  const duplicateSectionIds = migratedData.sections
+    .map((s) => s.id)
+    .filter((id, idx, arr) => arr.indexOf(id) !== idx);
+  if (duplicateSectionIds.length > 0) {
+    compatibility.errors.push(`段落 ID 存在重复：${[...new Set(duplicateSectionIds)].join("、")}。`);
+    compatibility.canImport = false;
+  }
+
+  return { data: migratedData, compatibility };
+}
+
+function calculateSchemeStats(data) {
+  const stats = {
+    name: data.pieceName || "未命名方案",
+    bpm: 0,
+    noteCount: 0,
+    gridSize: `${instruments.length}×${steps}`,
+    sectionCount: 0,
+    version: data.schemaVersion || 1
+  };
+
+  if (Array.isArray(data.sections) && data.sections.length > 0) {
+    stats.sectionCount = data.sections.length;
+    const firstSection = data.sections.find((s) => s.id === data.currentSectionId) || data.sections[0];
+    stats.bpm = firstSection?.bpm || data.bpm || 96;
+
+    data.sections.forEach((section) => {
+      if (Array.isArray(section.notes)) {
+        stats.noteCount += section.notes.length;
+      }
+    });
+  } else {
+    stats.bpm = data.bpm || 96;
+    stats.noteCount = Array.isArray(data.notes) ? data.notes.length : 0;
+    stats.sectionCount = 1;
+  }
+
+  return stats;
+}
+
+function renderSchemePreview(data, compatibility, isImportToList) {
+  const stats = calculateSchemeStats(data);
+
+  previewSchemeName.textContent = stats.name;
+  previewSchemeBpm.textContent = `${stats.bpm} BPM`;
+  previewSchemeNotes.textContent = `${stats.noteCount} 条`;
+  previewSchemeGrid.textContent = stats.gridSize;
+  previewSchemeSections.textContent = `${stats.sectionCount} 个`;
+  previewSchemeVersion.textContent = `v${stats.version}`;
+
+  if (compatibility.errors.length > 0 || compatibility.warnings.length > 0 || compatibility.infos.length > 0) {
+    schemeCompatibility.style.display = "block";
+
+    let severityClass = "success";
+    if (compatibility.errors.length > 0) {
+      severityClass = "error";
+    } else if (compatibility.warnings.length > 0) {
+      severityClass = "";
+    }
+
+    schemeCompatibility.className = `scheme-compatibility ${severityClass}`;
+
+    const items = [];
+    compatibility.errors.forEach((msg) => {
+      items.push(`<div class="compatibility-item error"><span class="compatibility-icon">✕</span><span>${msg}</span></div>`);
+    });
+    compatibility.warnings.forEach((msg) => {
+      items.push(`<div class="compatibility-item warning"><span class="compatibility-icon">⚠</span><span>${msg}</span></div>`);
+    });
+    compatibility.infos.forEach((msg) => {
+      items.push(`<div class="compatibility-item info"><span class="compatibility-icon">ℹ</span><span>${msg}</span></div>`);
+    });
+
+    compatibilityList.innerHTML = items.join("");
+  } else {
+    schemeCompatibility.style.display = "none";
+  }
+
+  if (isImportToList) {
+    const savedCount = Array.isArray(data.saved) ? data.saved.length : 0;
+    if (savedCount === 0) {
+      showSchemeError("该文件不包含任何已存方案，无法导入到列表。");
+      schemeIePreview.style.display = "none";
+      return;
+    }
+    const importListInfo = document.createElement("div");
+    importListInfo.style.cssText = "margin-bottom:12px;padding:10px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;font-size:13px;color:#92400e;";
+    importListInfo.innerHTML = `📥 将导入 <strong>${savedCount}</strong> 个已存方案到本地列表，不会覆盖当前编辑内容。`;
+    const previewHeader = schemeIePreview.querySelector(".preview-header");
+    if (previewHeader && !previewHeader.nextElementSibling?.dataset.importListInfo) {
+      importListInfo.dataset.importListInfo = "true";
+      previewHeader.after(importListInfo);
+    }
+  } else {
+    const existingInfo = schemeIePreview.querySelector('[data-import-list-info]');
+    if (existingInfo) existingInfo.remove();
+  }
+
+  schemeConfirmBtn.disabled = !compatibility.canImport;
+  schemeIePreview.style.display = "block";
+}
+
+function resetSchemeImportState() {
+  parsedSchemeData = null;
+  parsedSchemeIsImportToList = false;
+  parsedSchemeCompatibility = null;
+  schemeFileInput.value = "";
+  schemeIePreview.style.display = "none";
+  schemeConfirmBtn.disabled = true;
+  hideSchemeError();
+}
+
+async function handleSchemeFileSelect(event, isImportToList) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+
+  hideSchemeError();
+  resetSchemeImportState();
+
+  try {
+    const rawData = await parseSchemeFile(file);
+    const { data, compatibility } = validateAndMigrateScheme(rawData);
+
+    parsedSchemeData = data;
+    parsedSchemeIsImportToList = isImportToList;
+    parsedSchemeCompatibility = compatibility;
+
+    renderSchemePreview(data, compatibility, isImportToList);
+  } catch (error) {
+    showSchemeError(error.message);
+    schemeFileInput.value = "";
+  }
+}
+
+function applySchemeImport() {
+  if (!parsedSchemeData || !parsedSchemeCompatibility?.canImport) {
+    showSchemeError("当前没有可导入的有效数据。");
+    return;
+  }
+
+  try {
+    if (parsedSchemeIsImportToList) {
+      if (!Array.isArray(parsedSchemeData.saved) || parsedSchemeData.saved.length === 0) {
+        throw new Error("文件中不包含可导入的已存方案。");
+      }
+
+      const existingIds = new Set(state.saved.map((s) => s.id));
+      const importedItems = deepCloneSavedList(parsedSchemeData.saved);
+      let addedCount = 0;
+
+      importedItems.forEach((item) => {
+        while (item.id && existingIds.has(item.id)) {
+          item.id = crypto.randomUUID();
+        }
+        if (!item.createdAt) {
+          item.createdAt = new Date().toISOString();
+        }
+        state.saved.unshift(item);
+        existingIds.add(item.id);
+        addedCount++;
+      });
+
+      save();
+      render();
+      showSchemeSuccess(`已成功导入 ${addedCount} 个方案到已存列表！`);
+    } else {
+      const confirmMsg = parsedSchemeCompatibility.migrated
+        ? "检测到数据已迁移，确定要导入并覆盖当前内容吗？"
+        : "确定要导入此方案吗？当前未保存的内容将被覆盖。";
+
+      if (!confirm(confirmMsg)) {
+        return;
+      }
+
+      const originalState = JSON.parse(JSON.stringify(state));
+
+      try {
+        if (timer) {
+          stopPlayback();
+        }
+
+        state.pieceName = parsedSchemeData.pieceName || "导入的方案";
+        state.sections = deepCloneSections(parsedSchemeData.sections);
+        state.currentSectionId = parsedSchemeData.currentSectionId || state.sections[0]?.id;
+        state.continuousPlay = parsedSchemeData.continuousPlay ?? false;
+
+        if (parsedSchemeData.saved && Array.isArray(parsedSchemeData.saved) && parsedSchemeData.saved.length > 0) {
+          const existingIds = new Set(state.saved.map((s) => s.id));
+          const importedSaved = deepCloneSavedList(parsedSchemeData.saved);
+          importedSaved.forEach((item) => {
+            while (item.id && existingIds.has(item.id)) {
+              item.id = crypto.randomUUID();
+            }
+            if (!item.createdAt) {
+              item.createdAt = new Date().toISOString();
+            }
+            state.saved.unshift(item);
+            existingIds.add(item.id);
+          });
+        }
+
+        save();
+        render();
+        showSchemeSuccess("方案导入成功！");
+      } catch (applyError) {
+        Object.assign(state, originalState);
+        save();
+        render();
+        throw new Error(`导入时发生错误，已回滚到之前的状态：${applyError.message}`);
+      }
+    }
+
+    resetSchemeImportState();
+  } catch (error) {
+    showSchemeError(error.message);
+  }
+}
+
+let pendingImportToList = false;
+
+schemeExportBtn.addEventListener("click", exportScheme);
+
+schemeFileInput.addEventListener("change", (e) => {
+  handleSchemeFileSelect(e, pendingImportToList);
+  pendingImportToList = false;
+});
+
+schemeImportListBtn.addEventListener("click", () => {
+  pendingImportToList = true;
+  schemeFileInput.click();
+});
+
+schemeConfirmBtn.addEventListener("click", applySchemeImport);
+
+schemeCancelBtn.addEventListener("click", resetSchemeImportState);
 
 render();
 
