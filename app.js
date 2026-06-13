@@ -1,4 +1,6 @@
 const storageKey = "wxyy-4-luogujing-grid";
+const rehearsalLogKey = "wxyy-4-rehearsal-log";
+const MAX_REHEARSAL_LOG = 50;
 const instruments = [
   { name: "大锣", token: "仓", freq: 180 },
   { name: "鼓", token: "冬", freq: 120 },
@@ -125,6 +127,71 @@ function migrateOldFormat(oldState) {
   };
 }
 
+function migrateRehearsalEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const result = {
+    id: entry.id || crypto.randomUUID(),
+    timestamp: entry.timestamp || new Date().toISOString(),
+    sectionId: entry.sectionId || null,
+    sectionName: entry.sectionName || "未知段落",
+    pieceName: entry.pieceName || "",
+    bpm: typeof entry.bpm === "number" ? entry.bpm : 96,
+    loop: entry.loop ?? "",
+    loopLabel: entry.loopLabel || (entry.loop === "" ? "全段" : `第${Number(entry.loop) + 1}小节`),
+    enabledInstruments: Array.isArray(entry.enabledInstruments)
+      ? [...entry.enabledInstruments]
+      : [true, true, true, true],
+    activeVoices: Array.isArray(entry.activeVoices)
+      ? [...entry.activeVoices]
+      : instruments
+          .filter((_, idx) => (Array.isArray(entry.enabledInstruments) ? entry.enabledInstruments[idx] : true))
+          .map((i) => i.name),
+    pausePosition: entry.pausePosition ?? null,
+    pauseLabel: entry.pauseLabel || (entry.pausePosition != null
+      ? `第${Math.floor(entry.pausePosition / 4) + 1}小节第${(entry.pausePosition % 4) + 1}拍`
+      : "播放完成"),
+    durationMs: typeof entry.durationMs === "number" ? entry.durationMs : null,
+    snapshot: entry.snapshot ? {
+      sections: Array.isArray(entry.snapshot.sections)
+        ? deepCloneSections(entry.snapshot.sections)
+        : null,
+      currentSectionId: entry.snapshot.currentSectionId || null,
+      pieceName: entry.snapshot.pieceName || "",
+      continuousPlay: entry.snapshot.continuousPlay ?? false
+    } : null
+  };
+  if (!result.snapshot || !result.snapshot.sections) {
+    result.snapshot = {
+      sections: null,
+      currentSectionId: result.sectionId,
+      pieceName: result.pieceName,
+      continuousPlay: false
+    };
+  }
+  return result;
+}
+
+function loadRehearsalLog() {
+  try {
+    const raw = localStorage.getItem(rehearsalLogKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const migrated = parsed
+      .map(migrateRehearsalEntry)
+      .filter(Boolean);
+    return migrated.slice(0, MAX_REHEARSAL_LOG);
+  } catch {
+    return [];
+  }
+}
+
+function saveRehearsalLog() {
+  localStorage.setItem(rehearsalLogKey, JSON.stringify(rehearsalLog));
+}
+
+let rehearsalLog = loadRehearsalLog();
+
 const storedState = JSON.parse(localStorage.getItem(storageKey) || "null");
 let state;
 if (storedState) {
@@ -161,6 +228,8 @@ let playhead = 0;
 let audioContext = null;
 let currentPlaySectionIndex = 0;
 let continuousPlaySectionCount = 0;
+let currentRehearsalId = null;
+let currentRehearsalStartTime = null;
 
 const grid = document.querySelector("#grid");
 const savedList = document.querySelector("#savedList");
@@ -192,6 +261,9 @@ const importSummary = document.querySelector("#importSummary");
 const sectionsList = document.querySelector("#sectionsList");
 const addSectionBtn = document.querySelector("#addSectionBtn");
 const continuousPlayCheckbox = document.querySelector("#continuousPlay");
+const rehearsalTimelineBody = document.querySelector("#rehearsalTimelineBody");
+const rehearsalCount = document.querySelector("#rehearsalCount");
+const rehearsalClearBtn = document.querySelector("#rehearsalClearBtn");
 
 let parsedPattern = null;
 let editingSectionId = null;
@@ -508,6 +580,72 @@ function renderDashboard() {
   lastPlay.innerHTML = `${statusDot}<span>${state.playCount ? `共 ${state.playCount} 次${sectionText}` : "等待开始"}</span>`;
 }
 
+function formatRehearsalTime(isoString) {
+  if (!isoString) return "";
+  const d = new Date(isoString);
+  const now = new Date();
+  const diff = now.getTime() - d.getTime();
+  if (diff < 60000) return "刚刚";
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+  return d.toLocaleDateString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatDuration(ms) {
+  if (ms == null || ms < 0) return "";
+  const totalSec = Math.floor(ms / 1000);
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  if (mins > 0) {
+    return `${mins}分${secs}秒`;
+  }
+  return `${secs}秒`;
+}
+
+function renderRehearsalTimeline() {
+  if (rehearsalLog.length === 0) {
+    rehearsalTimelineBody.innerHTML = `<div class="rehearsal-empty">尚未产生排练记录，播放后将自动记录</div>`;
+    rehearsalCount.textContent = "";
+    return;
+  }
+  rehearsalCount.textContent = `${rehearsalLog.length}/${MAX_REHEARSAL_LOG}`;
+  rehearsalTimelineBody.innerHTML = rehearsalLog.map((entry, idx) => {
+    const voiceNames = entry.activeVoices || instruments
+      .filter((_, idx2) => entry.enabledInstruments?.[idx2])
+      .map((i) => i.name);
+    const voiceStr = voiceNames.length === instruments.length ? "全部声部" : voiceNames.join("、");
+    const pauseStr = entry.pauseLabel || (entry.pausePosition != null ? `第${Math.floor(entry.pausePosition / 4) + 1}小节第${(entry.pausePosition % 4) + 1}拍` : "播放完成");
+    const isPlaying = entry.id === currentRehearsalId;
+    const durationStr = formatDuration(entry.durationMs);
+    const canRestore = entry.snapshot && entry.snapshot.sections && entry.snapshot.sections.length > 0;
+    return `
+      <div class="rehearsal-item ${isPlaying ? "rehearsal-playing" : ""}" data-rehearsal-id="${entry.id}" data-rehearsal-idx="${idx}">
+        <div class="rehearsal-item-top">
+          <div class="rehearsal-item-info">
+            <div class="rehearsal-item-title">
+              ${isPlaying ? '<span class="rehearsal-live-badge">直播中</span>' : ""}
+              ${entry.sectionName || "未知段落"}${entry.pieceName ? ` · ${entry.pieceName}` : ""}
+            </div>
+            <div class="rehearsal-item-time">
+              ${formatRehearsalTime(entry.timestamp)}${durationStr ? ` · 播放时长 ${durationStr}` : ""}
+            </div>
+          </div>
+          <div class="rehearsal-item-btns">
+            <button type="button" class="rehearsal-restore-btn" data-rehearsal-restore="${entry.id}" title="恢复此排练状态" ${canRestore ? "" : "disabled style=\"opacity:0.4;cursor:not-allowed;\""}>↺</button>
+            <button type="button" class="rehearsal-delete-btn" data-rehearsal-delete="${entry.id}" title="删除此条记录">✕</button>
+          </div>
+        </div>
+        <div class="rehearsal-item-tags">
+          <span class="rehearsal-tag bpm-tag">${entry.bpm}BPM</span>
+          <span class="rehearsal-tag measure-tag">${entry.loopLabel || "全段"}</span>
+          <span class="rehearsal-tag voice-tag">${voiceStr}</span>
+          <span class="rehearsal-tag pause-tag">${isPlaying ? "播放中…" : `暂停：${pauseStr}`}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
 function render() {
   renderSectionsList();
   syncFields();
@@ -515,6 +653,7 @@ function render() {
   renderVoicePanel();
   renderSidebars();
   renderDashboard();
+  renderRehearsalTimeline();
 }
 
 const canonicalMap = {
@@ -870,8 +1009,42 @@ function startPlayback() {
   save();
   tick();
   timer = setInterval(tick, 60000 / section.bpm);
+
+  currentRehearsalId = crypto.randomUUID();
+  currentRehearsalStartTime = Date.now();
+  const activeVoices = instruments
+    .filter((_, idx) => section.enabledInstruments[idx])
+    .map((i) => i.name);
+  const loopLabel = section.loop === "" ? "全段" : `第${Number(section.loop) + 1}小节`;
+  rehearsalLog.unshift({
+    id: currentRehearsalId,
+    timestamp: new Date().toISOString(),
+    sectionId: section.id,
+    sectionName: section.name,
+    pieceName: state.pieceName,
+    bpm: section.bpm,
+    loop: section.loop,
+    loopLabel,
+    enabledInstruments: [...section.enabledInstruments],
+    activeVoices,
+    pausePosition: null,
+    pauseLabel: "播放中…",
+    durationMs: null,
+    snapshot: {
+      sections: deepCloneSections(state.sections),
+      currentSectionId: state.currentSectionId,
+      pieceName: state.pieceName,
+      continuousPlay: state.continuousPlay
+    }
+  });
+  if (rehearsalLog.length > MAX_REHEARSAL_LOG) {
+    rehearsalLog = rehearsalLog.slice(0, MAX_REHEARSAL_LOG);
+  }
+  saveRehearsalLog();
+
   renderDashboard();
   renderGrid();
+  renderRehearsalTimeline();
 }
 
 function stopPlayback() {
@@ -879,12 +1052,48 @@ function stopPlayback() {
   timer = null;
   document.querySelectorAll(".cell.playing").forEach((cell) => cell.classList.remove("playing"));
 
+  if (currentRehearsalId) {
+    const entry = rehearsalLog.find((r) => r.id === currentRehearsalId);
+    if (entry) {
+      const currentPlayedSection = getPlaySection() || getCurrentSection();
+      entry.durationMs = currentRehearsalStartTime ? Date.now() - currentRehearsalStartTime : null;
+
+      if (currentPlayedSection) {
+        const [start, end] = currentRange(currentPlayedSection);
+        if (playhead >= start && playhead <= end) {
+          entry.pausePosition = playhead;
+          entry.pauseLabel = currentPlayedSection.id !== entry.sectionId
+            ? `${currentPlayedSection.name} · 第${Math.floor(playhead / 4) + 1}小节第${(playhead % 4) + 1}拍`
+            : `第${Math.floor(playhead / 4) + 1}小节第${(playhead % 4) + 1}拍`;
+          entry.sectionId = currentPlayedSection.id;
+          entry.sectionName = currentPlayedSection.name;
+          entry.bpm = currentPlayedSection.bpm;
+        } else {
+          entry.pausePosition = null;
+          entry.pauseLabel = "播放完成";
+        }
+      } else {
+        entry.pausePosition = null;
+        entry.pauseLabel = "播放完成";
+      }
+
+      if (entry.snapshot) {
+        entry.snapshot.currentSectionId = state.currentSectionId;
+      }
+
+      saveRehearsalLog();
+    }
+    currentRehearsalId = null;
+    currentRehearsalStartTime = null;
+  }
+
   if (state.continuousPlay && state.sections.length > 1) {
     playhead = 0;
     currentPlaySectionIndex = 0;
   }
 
   renderDashboard();
+  renderRehearsalTimeline();
 }
 
 grid.addEventListener("click", (event) => {
@@ -1160,6 +1369,58 @@ continuousPlayCheckbox.addEventListener("change", () => {
   renderDashboard();
 });
 
+rehearsalTimelineBody.addEventListener("click", (event) => {
+  const restoreBtn = event.target.closest("[data-rehearsal-restore]");
+  const deleteBtn = event.target.closest("[data-rehearsal-delete]");
+
+  if (restoreBtn) {
+    event.stopPropagation();
+    const id = restoreBtn.dataset.rehearsalRestore;
+    const entry = rehearsalLog.find((r) => r.id === id);
+    if (!entry || !entry.snapshot || !entry.snapshot.sections) return;
+    if (!confirm(`确定要恢复到「${entry.sectionName || "未知段落"}」的排练状态吗？\n当前未保存的谱面修改将丢失。`)) return;
+    if (timer) stopPlayback();
+    state.sections = deepCloneSections(entry.snapshot.sections);
+    state.currentSectionId = entry.snapshot.currentSectionId || state.sections[0]?.id || entry.sectionId;
+    state.pieceName = entry.snapshot.pieceName || state.pieceName;
+    state.continuousPlay = entry.snapshot.continuousPlay ?? state.continuousPlay;
+
+    const targetSection = state.sections.find((s) => s.id === state.currentSectionId) || state.sections[0];
+    if (targetSection) {
+      const [rangeStart] = currentRange(targetSection);
+      if (entry.pausePosition != null && entry.sectionId === targetSection.id) {
+        playhead = entry.pausePosition;
+      } else {
+        playhead = rangeStart;
+      }
+    } else {
+      playhead = 0;
+    }
+    save();
+    render();
+    return;
+  }
+
+  if (deleteBtn) {
+    event.stopPropagation();
+    const id = deleteBtn.dataset.rehearsalDelete;
+    const entry = rehearsalLog.find((r) => r.id === id);
+    if (!entry) return;
+    if (!confirm(`确定要删除「${entry.sectionName || "未知段落"}」的排练记录吗？`)) return;
+    rehearsalLog = rehearsalLog.filter((r) => r.id !== id);
+    saveRehearsalLog();
+    renderRehearsalTimeline();
+  }
+});
+
+rehearsalClearBtn.addEventListener("click", () => {
+  if (rehearsalLog.length === 0) return;
+  if (!confirm("确定要清空所有排练记录吗？此操作不可撤销。")) return;
+  rehearsalLog = [];
+  saveRehearsalLog();
+  renderRehearsalTimeline();
+});
+
 render();
 
 setInterval(() => {
@@ -1173,5 +1434,8 @@ setInterval(() => {
     const countSpan = document.createElement("span");
     countSpan.innerHTML = state.playCount ? `共 ${state.playCount} 次${sectionText}` : "等待开始";
     lastPlay.innerHTML = `${statusDot}<span>${countSpan.innerHTML}</span>`;
+  }
+  if (rehearsalLog.length > 0) {
+    renderRehearsalTimeline();
   }
 }, 30000);
