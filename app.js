@@ -2231,7 +2231,10 @@ function renderTempoStepsPreview() {
 function updateTempoStatusDisplay() {
   const totalRounds = tempoTrainer.totalRounds;
   const currentRound = tempoTrainer.currentRound;
-  const currentBpm = tempoTrainer.bpmSteps[tempoTrainer.currentBpmIndex] || 0;
+  const currentBpmIndex = tempoTrainer.completed
+    ? tempoTrainer.bpmSteps.length - 1
+    : tempoTrainer.currentBpmIndex;
+  const currentBpm = tempoTrainer.bpmSteps[currentBpmIndex] || 0;
   const beatsRemaining = tempoTrainer.beatsRemaining;
   const progress = totalRounds > 0 ? Math.round((currentRound / totalRounds) * 100) : 0;
 
