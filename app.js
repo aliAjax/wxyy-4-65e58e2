@@ -313,6 +313,18 @@ let currentRehearsalStartTime = null;
 let pendingRehearsalResume = null;
 
 const diagnosisStorageKey = "wxyy-4-diagnosis-result";
+const practiceListStorageKey = "wxyy-4-practice-list";
+const PRIORITY = { HIGH: "high", MEDIUM: "medium", LOW: "low" };
+const CATEGORY_LABELS = {
+  completion: "谱面完成度",
+  note: "协作批注",
+  rehearsal: "排练记录",
+  diagnosis: "错拍诊断",
+  mute: "静音声部"
+};
+
+let practiceTasks = [];
+let completedPracticeIds = new Set();
 let diagnosisMode = false;
 let diagnosisActive = false;
 let diagnosisTimer = null;
@@ -1091,6 +1103,7 @@ function render() {
   renderSidebars();
   renderDashboard();
   renderRehearsalTimeline();
+  renderPracticeList();
   if (tempoTrainerSection && tempoTrainerSection.classList.contains('disabled') === false && !tempoTrainer.enabled) {
     tempoTrainerSection.classList.add('disabled');
   }
@@ -2489,6 +2502,12 @@ const resultTotal = document.querySelector("#resultTotal");
 const resultCorrect = document.querySelector("#resultCorrect");
 const resultWrong = document.querySelector("#resultWrong");
 
+const practiceListSection = document.querySelector("#practiceList");
+const practiceListBody = document.querySelector("#practiceListBody");
+const practiceProgressEl = document.querySelector("#practiceProgress");
+const practiceRegenerateBtn = document.querySelector("#practiceRegenerateBtn");
+const practiceClearBtn = document.querySelector("#practiceClearBtn");
+
 function loadLastDiagnosisResult() {
   try {
     const raw = localStorage.getItem(diagnosisStorageKey);
@@ -3547,6 +3566,35 @@ diagnosisAnswerButtons.addEventListener("click", (event) => {
 
 loadLastDiagnosisResult();
 
+loadPracticeTasks();
+
+if (practiceRegenerateBtn) {
+  practiceRegenerateBtn.addEventListener("click", () => {
+    if (practiceTasks.length > 0 && !confirm("重新生成将覆盖当前练习清单，确定继续吗？")) return;
+    regeneratePracticeTasks();
+  });
+}
+
+if (practiceClearBtn) {
+  practiceClearBtn.addEventListener("click", clearPracticeTasks);
+}
+
+if (practiceListBody) {
+  practiceListBody.addEventListener("change", (event) => {
+    const toggleEl = event.target.closest("[data-practice-toggle]");
+    if (toggleEl) {
+      togglePracticeTask(toggleEl.dataset.practiceToggle);
+    }
+  });
+
+  practiceListBody.addEventListener("click", (event) => {
+    const deleteEl = event.target.closest("[data-practice-delete]");
+    if (deleteEl) {
+      deletePracticeTask(deleteEl.dataset.practiceDelete);
+    }
+  });
+}
+
 if (collabAddBtn) {
   collabAddBtn.addEventListener("click", () => {
     if (!collabNoteInput || !collabNoteInput.value.trim()) return;
@@ -3645,6 +3693,432 @@ const vcCancelBtn = document.querySelector("#vcCancelBtn");
 let vcCompareItem = null;
 let vcSelectedSections = new Set();
 let vcSelectedBeats = {};
+
+function loadPracticeTasks() {
+  try {
+    const raw = localStorage.getItem(practiceListStorageKey);
+    if (!raw) {
+      practiceTasks = [];
+      completedPracticeIds = new Set();
+      return;
+    }
+    const data = JSON.parse(raw);
+    practiceTasks = Array.isArray(data.tasks) ? data.tasks : [];
+    completedPracticeIds = new Set(Array.isArray(data.completedIds) ? data.completedIds : []);
+    practiceTasks.forEach(t => {
+      if (!t.id) t.id = crypto.randomUUID();
+    });
+  } catch {
+    practiceTasks = [];
+    completedPracticeIds = new Set();
+  }
+}
+
+function savePracticeTasks() {
+  try {
+    localStorage.setItem(practiceListStorageKey, JSON.stringify({
+      tasks: practiceTasks,
+      completedIds: [...completedPracticeIds]
+    }));
+  } catch {}
+}
+
+function makePracticeTask(params) {
+  return {
+    id: crypto.randomUUID(),
+    category: params.category,
+    priority: params.priority || PRIORITY.MEDIUM,
+    title: params.title,
+    description: params.description || "",
+    measure: params.measure != null ? params.measure : null,
+    instrument: params.instrument != null ? params.instrument : null,
+    sourceData: params.sourceData || null,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function getCompletedMeasureSet() {
+  const completedMeasures = new Set();
+  const completedInstruments = new Set();
+  practiceTasks.forEach(task => {
+    if (completedPracticeIds.has(task.id)) {
+      if (task.category === "completion" && task.measure != null) {
+        completedMeasures.add(task.measure);
+      }
+      if (task.category === "mute" && task.instrument != null) {
+        completedInstruments.add(task.instrument);
+      }
+      if (task.category === "note" && task.measure != null) {
+        completedMeasures.add(task.measure);
+      }
+      if (task.category === "rehearsal" && task.measure != null) {
+        completedMeasures.add(task.measure);
+      }
+      if (task.category === "diagnosis" && task.measure != null) {
+        completedMeasures.add(task.measure);
+      }
+    }
+  });
+  return { completedMeasures, completedInstruments };
+}
+
+function getDedupeKey(task) {
+  const parts = [task.category];
+  if (task.measure != null) parts.push(`m:${task.measure}`);
+  if (task.instrument != null) parts.push(`i:${task.instrument}`);
+  if (task.sourceData && task.sourceData.noteId) parts.push(`note:${task.sourceData.noteId}`);
+  if (task.sourceData && task.sourceData.step != null) parts.push(`step:${task.sourceData.step}`);
+  return parts.join("|");
+}
+
+function generateTasksFromCompletion() {
+  const section = getCurrentSection();
+  if (!section) return [];
+  const tasks = [];
+  const measures = getMeasureData();
+  measures.forEach(m => {
+    if (m.ratio < 0.8) {
+      const priority = m.ratio < 0.4 ? PRIORITY.HIGH : (m.ratio < 0.6 ? PRIORITY.MEDIUM : PRIORITY.LOW);
+      const pct = Math.round(m.ratio * 100);
+      tasks.push(makePracticeTask({
+        category: "completion",
+        priority,
+        measure: m.measure - 1,
+        title: `完善第${m.measure}小节的谱面（当前${pct}%）`,
+        description: `第${m.measure}小节还有 ${m.total - m.filled} 个空格需要填入口令，建议逐拍补充完整。`,
+        sourceData: { measure: m.measure - 1, ratio: m.ratio }
+      }));
+    }
+  });
+  if (measures.length > 0) {
+    const totalFilled = measures.reduce((s, m) => s + m.filled, 0);
+    const totalCells = measures.reduce((s, m) => s + m.total, 0);
+    const overallRatio = totalCells ? totalFilled / totalCells : 0;
+    if (overallRatio < 0.5) {
+      tasks.push(makePracticeTask({
+        category: "completion",
+        priority: PRIORITY.HIGH,
+        title: `整体谱面完善（当前完成度 ${Math.round(overallRatio * 100)}%）`,
+        description: `整段谱面整体完成度不足，建议按小节顺序依次填充，确保每个乐器声部的节奏准确。`,
+        sourceData: { overall: true, ratio: overallRatio }
+      }));
+    }
+  }
+  return tasks;
+}
+
+function generateTasksFromNotes() {
+  const section = getCurrentSection();
+  if (!section || !Array.isArray(section.collabNotes)) return [];
+  const tasks = [];
+  const pendingNotes = section.collabNotes.filter(n => !n.resolved);
+  pendingNotes.forEach(note => {
+    const priority = note.type === "teacher" ? PRIORITY.HIGH : PRIORITY.MEDIUM;
+    const targetLabel = note.target === "all" ? "全段" : `第${Number(note.target) + 1}小节`;
+    const typeLabel = note.type === "teacher" ? "老师批注" : "学生反馈";
+    tasks.push(makePracticeTask({
+      category: "note",
+      priority,
+      measure: note.target === "all" ? null : Number(note.target),
+      title: `解决${targetLabel}的${typeLabel}：${note.content.slice(0, 30)}${note.content.length > 30 ? "..." : ""}`,
+      description: `${typeLabel}：${note.content}\n目标：${targetLabel}\n创建于 ${new Date(note.createdAt).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`,
+      sourceData: { noteId: note.id, type: note.type, target: note.target }
+    }));
+  });
+  return tasks;
+}
+
+function generateTasksFromRehearsal() {
+  if (!rehearsalLog || rehearsalLog.length === 0) return [];
+  const tasks = [];
+  const recent = rehearsalLog.slice(0, 5);
+  const pauseMeasures = new Map();
+  recent.forEach(entry => {
+    if (entry.pausePosition != null && entry.pauseLabel && !entry.pauseLabel.includes("播放完成")) {
+      const measure = Math.floor(entry.pausePosition / 4);
+      pauseMeasures.set(measure, (pauseMeasures.get(measure) || 0) + 1);
+    }
+  });
+  pauseMeasures.forEach((count, measure) => {
+    if (measure >= 0 && measure < 4 && count >= 1) {
+      const priority = count >= 2 ? PRIORITY.HIGH : PRIORITY.MEDIUM;
+      tasks.push(makePracticeTask({
+        category: "rehearsal",
+        priority,
+        measure,
+        title: `重点练习第${measure + 1}小节（最近在附近暂停${count}次）`,
+        description: `最近的排练中多次在第${measure + 1}小节附近暂停，说明该小节衔接或节奏存在问题，建议单独循环练习该小节。`,
+        sourceData: { measure, pauseCount: count }
+      }));
+    }
+  });
+  return tasks;
+}
+
+function generateTasksFromDiagnosis() {
+  if (!lastDiagnosisResult) return [];
+  const tasks = [];
+  const { wrongPositions = [], confusedInstruments = [], accuracy = 100 } = lastDiagnosisResult;
+  if (accuracy < 80) {
+    const priority = accuracy < 50 ? PRIORITY.HIGH : PRIORITY.MEDIUM;
+    tasks.push(makePracticeTask({
+      category: "diagnosis",
+      priority,
+      title: `整体错拍率较高（正确率 ${accuracy}%），建议重新做一轮诊断练习`,
+      description: `上次诊断练习正确率仅 ${accuracy}%，建议降低难度或先针对易错位置专项练习后再重新诊断。`,
+      sourceData: { accuracy }
+    }));
+  }
+  if (Array.isArray(wrongPositions) && wrongPositions.length > 0) {
+    const measureMap = new Map();
+    wrongPositions.forEach(pos => {
+      const measure = Math.floor((pos.step || 0) / 4);
+      if (!measureMap.has(measure)) measureMap.set(measure, []);
+      measureMap.get(measure).push(pos);
+    });
+    measureMap.forEach((positions, measure) => {
+      if (measure >= 0 && measure < 4) {
+        const beatLabels = positions.map(p => p.beatLabel || `第${measure + 1}小节`).join("、");
+        const priority = positions.length >= 2 ? PRIORITY.HIGH : PRIORITY.MEDIUM;
+        tasks.push(makePracticeTask({
+          category: "diagnosis",
+          priority,
+          measure,
+          title: `纠正第${measure + 1}小节的错拍（${positions.length}处错误）`,
+          description: `错拍位置：${beatLabels}\n建议慢速逐拍练习，确认每个拍点的乐器口令准确后再逐步提速。`,
+          sourceData: { measure, positions: positions.map(p => p.step) }
+        }));
+      }
+    });
+  }
+  if (Array.isArray(confusedInstruments) && confusedInstruments.length > 0) {
+    confusedInstruments.slice(0, 2).forEach(item => {
+      const priority = item.count >= 3 ? PRIORITY.HIGH : PRIORITY.MEDIUM;
+      tasks.push(makePracticeTask({
+        category: "diagnosis",
+        priority,
+        title: `区分易混淆乐器：${item.label}（混淆${item.count}次）`,
+        description: `诊断练习中「${item.label}」出现了 ${item.count} 次混淆，建议对比两种乐器的音色特征，单独听辨练习。`,
+        sourceData: { confusedItem: item }
+      }));
+    });
+  }
+  return tasks;
+}
+
+function generateTasksFromMute() {
+  const section = getCurrentSection();
+  if (!section) return [];
+  const tasks = [];
+  const mutedIndices = [];
+  section.enabledInstruments.forEach((enabled, idx) => {
+    if (!enabled) mutedIndices.push(idx);
+  });
+  mutedIndices.forEach(idx => {
+    const inst = instruments[idx];
+    if (!inst) return;
+    const hasContent = section.pattern[idx] && section.pattern[idx].some(Boolean);
+    if (hasContent) {
+      tasks.push(makePracticeTask({
+        category: "mute",
+        priority: PRIORITY.MEDIUM,
+        instrument: idx,
+        title: `单独练习「${inst.name}」声部（当前静音）`,
+        description: `「${inst.name}」声部目前处于静音状态，该声部有谱面内容。建议先开启该声部单独练习，熟练后再与其他声部合奏。`,
+        sourceData: { instrument: idx }
+      }));
+    }
+  });
+  if (mutedIndices.length >= 2) {
+    tasks.push(makePracticeTask({
+      category: "mute",
+      priority: PRIORITY.LOW,
+      title: `恢复全部声部队合奏验证（${mutedIndices.length}个声部静音）`,
+      description: `当前有 ${mutedIndices.length} 个乐器声部处于静音状态。分声部练习完成后，建议开启全部声部进行合奏练习，验证整体配合效果。`,
+      sourceData: { allMuted: mutedIndices }
+    }));
+  }
+  return tasks;
+}
+
+function generatePracticeTasks() {
+  const section = getCurrentSection();
+  if (!section) return [];
+  const allTasks = [
+    ...generateTasksFromCompletion(),
+    ...generateTasksFromNotes(),
+    ...generateTasksFromRehearsal(),
+    ...generateTasksFromDiagnosis(),
+    ...generateTasksFromMute()
+  ];
+  const seen = new Set();
+  const deduped = [];
+  allTasks.forEach(task => {
+    const key = getDedupeKey(task);
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(task);
+    }
+  });
+  const priorityOrder = { [PRIORITY.HIGH]: 0, [PRIORITY.MEDIUM]: 1, [PRIORITY.LOW]: 2 };
+  const categoryOrder = { note: 0, diagnosis: 1, rehearsal: 2, completion: 3, mute: 4 };
+  deduped.sort((a, b) => {
+    if (priorityOrder[a.priority] !== priorityOrder[b.priority]) {
+      return priorityOrder[a.priority] - priorityOrder[b.priority];
+    }
+    if (categoryOrder[a.category] !== categoryOrder[b.category]) {
+      return categoryOrder[a.category] - categoryOrder[b.category];
+    }
+    return 0;
+  });
+  return deduped.slice(0, 12);
+}
+
+function regeneratePracticeTasks() {
+  practiceTasks = generatePracticeTasks();
+  completedPracticeIds = new Set();
+  savePracticeTasks();
+  renderPracticeList();
+  renderDashboard();
+}
+
+function clearPracticeTasks() {
+  if (practiceTasks.length === 0) return;
+  if (!confirm("确定要清空整个练习清单吗？此操作不可撤销。")) return;
+  practiceTasks = [];
+  completedPracticeIds = new Set();
+  savePracticeTasks();
+  renderPracticeList();
+  renderDashboard();
+}
+
+function togglePracticeTask(taskId) {
+  if (completedPracticeIds.has(taskId)) {
+    completedPracticeIds.delete(taskId);
+  } else {
+    completedPracticeIds.add(taskId);
+  }
+  savePracticeTasks();
+  renderPracticeList();
+  renderDashboard();
+}
+
+function deletePracticeTask(taskId) {
+  practiceTasks = practiceTasks.filter(t => t.id !== taskId);
+  completedPracticeIds.delete(taskId);
+  savePracticeTasks();
+  renderPracticeList();
+  renderDashboard();
+}
+
+function getPriorityLabel(p) {
+  switch (p) {
+    case PRIORITY.HIGH: return "高优先";
+    case PRIORITY.LOW: return "低优先";
+    default: return "中优先";
+  }
+}
+
+function renderPracticeList() {
+  if (!practiceListBody || !practiceProgressEl) return;
+  const total = practiceTasks.length;
+  const completed = practiceTasks.filter(t => completedPracticeIds.has(t.id)).length;
+  practiceProgressEl.textContent = `${completed}/${total} 已完成`;
+  if (total === 0) {
+    practiceListBody.innerHTML = `
+      <div class="practice-empty">点击「🔄 重新生成」按钮，系统将根据谱面完成度、协作批注、排练记录、错拍诊断和静音声部状态智能生成练习任务</div>
+    `;
+    return;
+  }
+  const tasksHtml = practiceTasks.map(task => {
+    const isDone = completedPracticeIds.has(task.id);
+    const priorityLabel = getPriorityLabel(task.priority);
+    const categoryLabel = CATEGORY_LABELS[task.category] || "练习任务";
+    return `
+      <div class="practice-task category-${task.category} ${isDone ? "completed" : ""}" data-practice-id="${task.id}">
+        <label class="practice-task-checkbox">
+          <input type="checkbox" data-practice-toggle="${task.id}" ${isDone ? "checked" : ""}>
+        </label>
+        <div class="practice-task-body">
+          <div class="practice-task-title">${task.title}</div>
+          ${task.description ? `<div class="practice-task-desc">${task.description.replace(/\n/g, "<br>")}</div>` : ""}
+          <div class="practice-task-meta">
+            <span class="priority-badge priority-${task.priority}">${priorityLabel}</span>
+            <span class="category-badge category-${task.category}">${categoryLabel}</span>
+            ${task.measure != null ? `<span class="source-badge">📍 第${task.measure + 1}小节</span>` : ""}
+            ${task.instrument != null ? `<span class="source-badge">🎵 ${instruments[task.instrument]?.name || ""}</span>` : ""}
+          </div>
+        </div>
+        <div class="practice-task-action">
+          <button type="button" class="practice-delete-btn" data-practice-delete="${task.id}" title="移除此任务">✕</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+  const categoryStats = {};
+  practiceTasks.forEach(t => {
+    if (!categoryStats[t.category]) categoryStats[t.category] = { total: 0, done: 0 };
+    categoryStats[t.category].total++;
+    if (completedPracticeIds.has(t.id)) categoryStats[t.category].done++;
+  });
+  const statsHtml = Object.entries(categoryStats).map(([cat, s]) => {
+    return `<span>${CATEGORY_LABELS[cat] || cat}: <span class="practice-stat-num">${s.done}/${s.total}</span></span>`;
+  }).join("");
+  practiceListBody.innerHTML = tasksHtml + `
+    <div class="practice-tasks-footer">
+      <div class="practice-tasks-stats">${statsHtml}</div>
+      <div>已完成 <strong style="color:var(--active)">${completed}</strong> / ${total} 项</div>
+    </div>
+  `;
+}
+
+const originalGetFocusMeasures = getFocusMeasures;
+function enhancedGetFocusMeasures() {
+  const measures = originalGetFocusMeasures();
+  if (measures.length === 0) return measures;
+  const { completedMeasures } = getCompletedMeasureSet();
+  return measures
+    .map(m => {
+      let adjustedScore = m.score;
+      const measureIdx = m.measure - 1;
+      if (completedMeasures.has(measureIdx)) {
+        adjustedScore *= 0.3;
+      }
+      return { ...m, adjustedScore };
+    })
+    .sort((a, b) => b.adjustedScore - a.adjustedScore)
+    .filter(m => m.adjustedScore > 0.1)
+    .slice(0, 3);
+}
+
+const originalGetSuggestions = getSuggestions;
+function enhancedGetSuggestions() {
+  const suggestions = originalGetSuggestions();
+  const section = getCurrentSection();
+  if (!section) return suggestions;
+  const { completedMeasures } = getCompletedMeasureSet();
+  const pendingTaskCount = practiceTasks.filter(t => !completedPracticeIds.has(t.id)).length;
+  if (pendingTaskCount > 0) {
+    const insertAt = suggestions.length < 3 ? suggestions.length : 1;
+    suggestions.splice(insertAt, 0, {
+      icon: "✅",
+      html: `练习清单中还有 <strong>${pendingTaskCount}</strong> 项待完成任务，完成后可提升排练效率。`
+    });
+  }
+  return suggestions.filter(s => {
+    if (completedMeasures.size > 0) {
+      for (const cm of completedMeasures) {
+        if (s.html && s.html.includes(`第${cm + 1}小节`)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }).slice(0, 4);
+}
+
+getFocusMeasures = enhancedGetFocusMeasures;
+getSuggestions = enhancedGetSuggestions;
 
 function normalizeSavedToSections(item) {
   if (Array.isArray(item.sections) && item.sections.length > 0) {
