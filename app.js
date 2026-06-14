@@ -44,6 +44,23 @@ const ASSIGNEES = [
   { value: "other", label: "其他" }
 ];
 
+function createDefaultMixConfig() {
+  return {
+    volume: [100, 100, 100, 100],
+    timbre: [100, 100, 100, 100],
+    accent: [false, false, false, false]
+  };
+}
+
+function deepCloneMixConfig(mix) {
+  if (!mix) return createDefaultMixConfig();
+  return {
+    volume: Array.isArray(mix.volume) ? [...mix.volume] : [100, 100, 100, 100],
+    timbre: Array.isArray(mix.timbre) ? [...mix.timbre] : [100, 100, 100, 100],
+    accent: Array.isArray(mix.accent) ? [...mix.accent] : [false, false, false, false]
+  };
+}
+
 function deepCloneSection(section) {
   if (!section) return null;
   return {
@@ -61,6 +78,7 @@ function deepCloneSection(section) {
     enabledInstruments: Array.isArray(section.enabledInstruments)
       ? [...section.enabledInstruments]
       : [true, true, true, true],
+    mixConfig: deepCloneMixConfig(section.mixConfig),
     measureRange: section.measureRange ? { ...section.measureRange } : null
   };
 }
@@ -88,7 +106,8 @@ function deepCloneSavedItem(item) {
       : null,
     enabledInstruments: Array.isArray(item.enabledInstruments)
       ? [...item.enabledInstruments]
-      : null
+      : null,
+    mixConfig: deepCloneMixConfig(item.mixConfig)
   };
 }
 
@@ -111,6 +130,7 @@ function createDefaultSection(name = "段落 1") {
       )
     ),
     enabledInstruments: [true, true, true, true],
+    mixConfig: createDefaultMixConfig(),
     measureRange: null
   };
 }
@@ -125,6 +145,7 @@ function createEmptySection(name = "段落 1") {
     collabNotes: [],
     pattern: instruments.map(() => Array.from({ length: steps }, () => "")),
     enabledInstruments: [true, true, true, true],
+    mixConfig: createDefaultMixConfig(),
     measureRange: null
   };
 }
@@ -263,6 +284,7 @@ function migrateOldFormat(oldState) {
       enabledInstruments: Array.isArray(oldState.enabledInstruments)
         ? [...oldState.enabledInstruments]
         : [true, true, true, true],
+      mixConfig: deepCloneMixConfig(oldState.mixConfig),
       measureRange: oldState.measureRange ? { ...oldState.measureRange } : null
     };
     result = {
@@ -294,6 +316,7 @@ function migrateRehearsalEntry(entry) {
     enabledInstruments: Array.isArray(entry.enabledInstruments)
       ? [...entry.enabledInstruments]
       : [true, true, true, true],
+    mixConfig: deepCloneMixConfig(entry.mixConfig),
     activeVoices: Array.isArray(entry.activeVoices)
       ? [...entry.activeVoices]
       : instruments
@@ -930,26 +953,79 @@ function renderVoicePanel() {
   const section = getCurrentSection();
   if (!section) return;
 
+  const mixConfig = section.mixConfig || createDefaultMixConfig();
   const allEnabled = section.enabledInstruments.every(Boolean);
+  const allMixDefault = mixConfig.volume.every(v => v === 100) &&
+                        mixConfig.timbre.every(t => t === 100) &&
+                        mixConfig.accent.every(a => !a);
+
   const voiceToggles = instruments.map((instrument, index) => {
     const enabled = section.enabledInstruments[index];
+    const volume = mixConfig.volume[index];
+    const timbre = mixConfig.timbre[index];
+    const accent = mixConfig.accent[index];
     return `
-      <label class="voice-toggle ${enabled ? "on" : "off"}">
-        <input type="checkbox" data-voice="${index}" ${enabled ? "checked" : ""}>
-        <span class="voice-indicator"></span>
-        <span class="voice-name">${instrument.name}</span>
-        <span class="voice-token">${instrument.token}</span>
-      </label>
+      <div class="voice-card ${enabled ? "on" : "off"}" data-voice-card="${index}">
+        <div class="voice-card-header">
+          <label class="voice-main-toggle">
+            <input type="checkbox" data-voice="${index}" ${enabled ? "checked" : ""}>
+            <span class="voice-indicator"></span>
+            <span class="voice-name">${instrument.name}</span>
+            <span class="voice-token">${instrument.token}</span>
+          </label>
+          <button type="button" class="voice-preview-btn" data-voice-preview="${index}" title="试听音色">
+            🔊
+          </button>
+        </div>
+        <div class="voice-card-body">
+          <div class="voice-control">
+            <label class="voice-control-label">
+              <span>音量</span>
+              <span class="voice-value">${volume}%</span>
+            </label>
+            <input type="range" class="voice-slider volume-slider" 
+                   data-volume="${index}" 
+                   min="0" max="150" value="${volume}"
+                   ${enabled ? "" : "disabled"}>
+          </div>
+          <div class="voice-control">
+            <label class="voice-control-label">
+              <span>音色</span>
+              <span class="voice-value">${timbre}%</span>
+            </label>
+            <input type="range" class="voice-slider timbre-slider" 
+                   data-timbre="${index}" 
+                   min="20" max="180" value="${timbre}"
+                   ${enabled ? "" : "disabled"}>
+          </div>
+          <div class="voice-control accent-control">
+            <label class="voice-control-label">
+              <span>重音</span>
+            </label>
+            <button type="button" class="accent-toggle-btn ${accent ? "on" : ""}" 
+                    data-accent="${index}"
+                    ${enabled ? "" : "disabled"}>
+              ${accent ? "🔴 强" : "⚪ 弱"}
+            </button>
+          </div>
+        </div>
+      </div>
     `;
   }).join("");
+
   voicePanel.innerHTML = `
     <div class="voice-header">
-      <h2>分声部练习</h2>
-      <button type="button" class="voice-all-btn" data-voice-all="${allEnabled ? "off" : "on"}">
-        ${allEnabled ? "全部静音" : "全部启用"}
-      </button>
+      <h2>分声部练习 & 混音控制</h2>
+      <div class="voice-header-actions">
+        <button type="button" class="voice-reset-btn" data-voice-reset="all" ${allMixDefault ? "disabled" : ""}>
+          ↺ 重置混音
+        </button>
+        <button type="button" class="voice-all-btn" data-voice-all="${allEnabled ? "off" : "on"}">
+          ${allEnabled ? "全部静音" : "全部启用"}
+        </button>
+      </div>
     </div>
-    <div class="voice-list">${voiceToggles}</div>
+    <div class="voice-grid">${voiceToggles}</div>
   `;
 }
 
@@ -1252,6 +1328,26 @@ function formatDuration(ms) {
   return `${secs}秒`;
 }
 
+function formatMixConfigSummary(mixConfig, enabledInstruments) {
+  if (!mixConfig) return "";
+  const details = [];
+  instruments.forEach((inst, idx) => {
+    if (!enabledInstruments || enabledInstruments[idx]) {
+      const vol = mixConfig.volume?.[idx] ?? 100;
+      const tim = mixConfig.timbre?.[idx] ?? 100;
+      const acc = mixConfig.accent?.[idx] ?? false;
+      if (vol !== 100 || tim !== 100 || acc) {
+        const parts = [];
+        if (vol !== 100) parts.push(`音量${vol}%`);
+        if (tim !== 100) parts.push(`音色${tim}%`);
+        if (acc) parts.push("重音");
+        details.push(`${inst.token}${parts.length ? `(${parts.join(",")})` : ""}`);
+      }
+    }
+  });
+  return details.join(" ");
+}
+
 function renderRehearsalTimeline() {
   if (rehearsalLog.length === 0) {
     rehearsalTimelineBody.innerHTML = `<div class="rehearsal-empty">尚未产生排练记录，播放后将自动记录</div>`;
@@ -1268,6 +1364,7 @@ function renderRehearsalTimeline() {
     const isPlaying = entry.id === currentRehearsalId;
     const durationStr = formatDuration(entry.durationMs);
     const canRestore = entry.snapshot && entry.snapshot.sections && entry.snapshot.sections.length > 0;
+    const mixSummary = formatMixConfigSummary(entry.mixConfig, entry.enabledInstruments);
     return `
       <div class="rehearsal-item ${isPlaying ? "rehearsal-playing" : ""}" data-rehearsal-id="${entry.id}" data-rehearsal-idx="${idx}">
         <div class="rehearsal-item-top">
@@ -1289,6 +1386,7 @@ function renderRehearsalTimeline() {
           <span class="rehearsal-tag bpm-tag">${entry.bpm}BPM</span>
           <span class="rehearsal-tag measure-tag">${entry.loopLabel || "全段"}</span>
           <span class="rehearsal-tag voice-tag">${voiceStr}</span>
+          ${mixSummary ? `<span class="rehearsal-tag mix-tag">🎚️ ${mixSummary}</span>` : ""}
           <span class="rehearsal-tag pause-tag">${isPlaying ? "播放中…" : `暂停：${pauseStr}`}</span>
         </div>
       </div>
@@ -1910,14 +2008,29 @@ function applyParsedPattern() {
   commandInput.value = "";
 }
 
-function playSound(instrument) {
+function playSound(instrument, mix = {}) {
   audioContext ||= new AudioContext();
   const osc = audioContext.createOscillator();
   const gain = audioContext.createGain();
-  osc.frequency.value = instrument.freq;
+
+  const volume = typeof mix.volume === "number" ? mix.volume : 100;
+  const timbre = typeof mix.timbre === "number" ? mix.timbre : 100;
+  const accent = mix.accent === true;
+
+  const baseFreq = instrument.freq;
+  const freqMultiplier = timbre / 100;
+  osc.frequency.value = baseFreq * freqMultiplier;
+
+  const baseGain = 0.08;
+  const volumeMultiplier = volume / 100;
+  const accentMultiplier = accent ? 1.5 : 1;
+  const finalGain = baseGain * volumeMultiplier * accentMultiplier;
+
   osc.type = instrument.name === "鼓" ? "sine" : "square";
-  gain.gain.setValueAtTime(0.08, audioContext.currentTime);
+
+  gain.gain.setValueAtTime(finalGain, audioContext.currentTime);
   gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.08);
+
   osc.connect(gain).connect(audioContext.destination);
   osc.start();
   osc.stop(audioContext.currentTime + 0.09);
@@ -1973,9 +2086,14 @@ function tick() {
   }
 
   highlight(playhead);
+  section.mixConfig = section.mixConfig || createDefaultMixConfig();
   instruments.forEach((instrument, rowIndex) => {
     if (section.enabledInstruments[rowIndex] && section.pattern[rowIndex][playhead]) {
-      playSound(instrument);
+      playSound(instrument, {
+        volume: section.mixConfig.volume[rowIndex],
+        timbre: section.mixConfig.timbre[rowIndex],
+        accent: section.mixConfig.accent[rowIndex]
+      });
     }
   });
 
@@ -2059,6 +2177,7 @@ function startPlayback() {
     .filter((_, idx) => section.enabledInstruments[idx])
     .map((i) => i.name);
   const loopLabel = section.loop === "" ? "全段" : `第${Number(section.loop) + 1}小节`;
+  section.mixConfig = section.mixConfig || createDefaultMixConfig();
   rehearsalLog.unshift({
     id: currentRehearsalId,
     timestamp: new Date().toISOString(),
@@ -2069,6 +2188,7 @@ function startPlayback() {
     loop: section.loop,
     loopLabel,
     enabledInstruments: [...section.enabledInstruments],
+    mixConfig: deepCloneMixConfig(section.mixConfig),
     activeVoices,
     pausePosition: null,
     pauseLabel: "播放中…",
@@ -2307,23 +2427,108 @@ savedList.addEventListener("click", (event) => {
 
 voicePanel.addEventListener("change", (event) => {
   const voiceIndex = event.target.closest("[data-voice]")?.dataset.voice;
-  if (voiceIndex === undefined) return;
+  const volumeIndex = event.target.closest("[data-volume]")?.dataset.volume;
+  const timbreIndex = event.target.closest("[data-timbre]")?.dataset.timbre;
+
   const section = getCurrentSection();
   if (!section) return;
-  section.enabledInstruments[Number(voiceIndex)] = event.target.checked;
-  save();
-  render();
+  section.mixConfig = section.mixConfig || createDefaultMixConfig();
+
+  if (voiceIndex !== undefined) {
+    section.enabledInstruments[Number(voiceIndex)] = event.target.checked;
+    save();
+    render();
+    return;
+  }
+
+  if (volumeIndex !== undefined) {
+    const value = Number(event.target.value);
+    section.mixConfig.volume[Number(volumeIndex)] = value;
+    const valueLabel = event.target.closest(".voice-control")?.querySelector(".voice-value");
+    if (valueLabel) valueLabel.textContent = `${value}%`;
+    save();
+    return;
+  }
+
+  if (timbreIndex !== undefined) {
+    const value = Number(event.target.value);
+    section.mixConfig.timbre[Number(timbreIndex)] = value;
+    const valueLabel = event.target.closest(".voice-control")?.querySelector(".voice-value");
+    if (valueLabel) valueLabel.textContent = `${value}%`;
+    save();
+    return;
+  }
+});
+
+voicePanel.addEventListener("input", (event) => {
+  const volumeIndex = event.target.closest("[data-volume]")?.dataset.volume;
+  const timbreIndex = event.target.closest("[data-timbre]")?.dataset.timbre;
+
+  const section = getCurrentSection();
+  if (!section) return;
+  section.mixConfig = section.mixConfig || createDefaultMixConfig();
+
+  if (volumeIndex !== undefined) {
+    const value = Number(event.target.value);
+    section.mixConfig.volume[Number(volumeIndex)] = value;
+    const valueLabel = event.target.closest(".voice-control")?.querySelector(".voice-value");
+    if (valueLabel) valueLabel.textContent = `${value}%`;
+    save();
+    return;
+  }
+
+  if (timbreIndex !== undefined) {
+    const value = Number(event.target.value);
+    section.mixConfig.timbre[Number(timbreIndex)] = value;
+    const valueLabel = event.target.closest(".voice-control")?.querySelector(".voice-value");
+    if (valueLabel) valueLabel.textContent = `${value}%`;
+    save();
+    return;
+  }
 });
 
 voicePanel.addEventListener("click", (event) => {
   const allBtn = event.target.closest("[data-voice-all]");
-  if (!allBtn) return;
+  const accentBtn = event.target.closest("[data-accent]");
+  const previewBtn = event.target.closest("[data-voice-preview]");
+  const resetBtn = event.target.closest("[data-voice-reset]");
+
   const section = getCurrentSection();
   if (!section) return;
-  const action = allBtn.dataset.voiceAll;
-  section.enabledInstruments = section.enabledInstruments.map(() => action === "on");
-  save();
-  render();
+  section.mixConfig = section.mixConfig || createDefaultMixConfig();
+
+  if (allBtn) {
+    const action = allBtn.dataset.voiceAll;
+    section.enabledInstruments = section.enabledInstruments.map(() => action === "on");
+    save();
+    render();
+    return;
+  }
+
+  if (accentBtn) {
+    const index = Number(accentBtn.dataset.accent);
+    section.mixConfig.accent[index] = !section.mixConfig.accent[index];
+    save();
+    render();
+    return;
+  }
+
+  if (previewBtn) {
+    const index = Number(previewBtn.dataset.voicePreview);
+    playSound(instruments[index], {
+      volume: section.mixConfig.volume[index],
+      timbre: section.mixConfig.timbre[index],
+      accent: section.mixConfig.accent[index]
+    });
+    return;
+  }
+
+  if (resetBtn) {
+    section.mixConfig = createDefaultMixConfig();
+    save();
+    render();
+    return;
+  }
 });
 
 parseBtn.addEventListener("click", () => {
@@ -3298,6 +3503,7 @@ function startTempoTrainer() {
     .filter((_, idx) => section.enabledInstruments[idx])
     .map((i) => i.name);
   const loopLabel = tempoTrainer.originalLoop === "" ? "全段" : `第${Number(tempoTrainer.originalLoop) + 1}小节`;
+  section.mixConfig = section.mixConfig || createDefaultMixConfig();
   rehearsalLog.unshift({
     id: currentRehearsalId,
     timestamp: new Date().toISOString(),
@@ -3308,6 +3514,7 @@ function startTempoTrainer() {
     loop: tempoTrainer.originalLoop,
     loopLabel,
     enabledInstruments: [...section.enabledInstruments],
+    mixConfig: deepCloneMixConfig(section.mixConfig),
     activeVoices,
     pausePosition: null,
     pauseLabel: "变速训练中…",
@@ -3339,9 +3546,14 @@ function tempoTrainerTick() {
   if (playhead < start || playhead > end) playhead = start;
 
   highlight(playhead);
+  section.mixConfig = section.mixConfig || createDefaultMixConfig();
   instruments.forEach((instrument, rowIndex) => {
     if (section.enabledInstruments[rowIndex] && section.pattern[rowIndex][playhead]) {
-      playSound(instrument);
+      playSound(instrument, {
+        volume: section.mixConfig.volume[rowIndex],
+        timbre: section.mixConfig.timbre[rowIndex],
+        accent: section.mixConfig.accent[rowIndex]
+      });
     }
   });
 
@@ -3828,9 +4040,14 @@ function diagnosisTick() {
     enableAnswerButtons(true);
 
     highlight(playhead);
+    section.mixConfig = section.mixConfig || createDefaultMixConfig();
     instruments.forEach((instrument, rowIndex) => {
       if (section.enabledInstruments[rowIndex] && section.pattern[rowIndex][playhead]) {
-        playSound(instrument);
+        playSound(instrument, {
+          volume: section.mixConfig.volume[rowIndex],
+          timbre: section.mixConfig.timbre[rowIndex],
+          accent: section.mixConfig.accent[rowIndex]
+        });
       }
     });
 
@@ -3838,9 +4055,14 @@ function diagnosisTick() {
   }
 
   highlight(playhead);
+  section.mixConfig = section.mixConfig || createDefaultMixConfig();
   instruments.forEach((instrument, rowIndex) => {
     if (section.enabledInstruments[rowIndex] && section.pattern[rowIndex][playhead]) {
-      playSound(instrument);
+      playSound(instrument, {
+        volume: section.mixConfig.volume[rowIndex],
+        timbre: section.mixConfig.timbre[rowIndex],
+        accent: section.mixConfig.accent[rowIndex]
+      });
     }
   });
 
