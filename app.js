@@ -177,9 +177,14 @@ function migrateNotesToCollabNotes(section) {
       content: noteContent,
       target: measure !== null ? measure : "all",
       resolved: false,
+      assignee: "teacher1",
+      priority: PRIORITY_LEVELS.MEDIUM,
+      practiceGoal: 0,
+      completionNote: "",
       createdAt: now,
       updatedAt: now,
-      _migrated: true
+      _migrated: true,
+      _taskMigrated: true
     });
     existingContents.add(noteContent);
   });
@@ -2212,8 +2217,13 @@ noteInput.addEventListener("keydown", (event) => {
     content: content,
     target: measure !== null ? measure : "all",
     resolved: false,
+    assignee: "teacher1",
+    priority: PRIORITY_LEVELS.MEDIUM,
+    practiceGoal: 0,
+    completionNote: "",
     createdAt: now,
     updatedAt: now,
+    _taskMigrated: true,
     _fromLegacy: true
   });
   noteInput.value = "";
@@ -4790,7 +4800,12 @@ function renderPracticeList() {
 
 function normalizeSavedToSections(item) {
   if (Array.isArray(item.sections) && item.sections.length > 0) {
-    return deepCloneSections(item.sections);
+    const sections = deepCloneSections(item.sections);
+    sections.forEach(section => {
+      migrateNotesToCollabNotes(section);
+      migrateAllCollabNotesToTasks(section);
+    });
+    return sections;
   }
   const section = deepCloneSection({
     id: crypto.randomUUID(),
@@ -4801,6 +4816,8 @@ function normalizeSavedToSections(item) {
     pattern: item.pattern,
     enabledInstruments: item.enabledInstruments
   });
+  migrateNotesToCollabNotes(section);
+  migrateAllCollabNotesToTasks(section);
   return [section];
 }
 
@@ -4905,7 +4922,11 @@ function computeNoteFieldDiff(curNote, histNote) {
     { key: "content", label: "内容" },
     { key: "type", label: "类型", format: v => v === "teacher" ? "老师" : v === "student" ? "学生" : v },
     { key: "target", label: "目标", format: v => v === "all" ? "全段" : `第${Number(v) + 1}小节` },
-    { key: "resolved", label: "状态", format: v => v ? "已解决" : "未解决" }
+    { key: "resolved", label: "状态", format: v => v ? "已解决" : "未解决" },
+    { key: "assignee", label: "负责人", format: v => getAssigneeLabel(v) || v },
+    { key: "priority", label: "优先级", format: v => PRIORITY_LABELS[v] || v },
+    { key: "practiceGoal", label: "练习目标", format: v => v > 0 ? `${v}次` : "无" },
+    { key: "completionNote", label: "完成说明" }
   ];
   const changes = [];
   for (const f of fields) {
@@ -5248,15 +5269,22 @@ function renderVersionCompare(curSections, histSections, histName) {
       html += `<div class="vc-diff-item">`;
       html += `<div class="vc-diff-label"><span class="diff-icon changed"></span> 协作批注</div>`;
       html += `<div class="vc-collab-diff">`;
+      const renderCollabNoteMeta = n => {
+        let meta = `<span class="cm-tag cm-type-${n.type}">${n.type === "teacher" ? "老师" : "学生"}</span>`;
+        meta += `<span class="cm-tag cm-target">${n.target === "all" ? "全段" : `第${Number(n.target) + 1}小节`}</span>`;
+        meta += `<span class="cm-tag ${n.resolved ? "cm-resolved" : "cm-pending"}">${n.resolved ? "已解决" : "未解决"}</span>`;
+        if (n.assignee) meta += `<span class="cm-tag cm-assignee">👤${getAssigneeLabel(n.assignee)}</span>`;
+        if (n.priority) meta += `<span class="cm-tag cm-priority-${n.priority}">${PRIORITY_ICONS[n.priority] || ""}${PRIORITY_LABELS[n.priority] || n.priority}</span>`;
+        if (n.practiceGoal > 0) meta += `<span class="cm-tag cm-goal">🎯${n.practiceGoal}次</span>`;
+        return meta;
+      };
       collabAdded.forEach(n => {
         html += `<div class="vc-collab-item added">`;
         html += `<span class="collab-diff-badge">历史有</span>`;
         html += `<div class="collab-diff-content">`;
         html += `<div class="collab-diff-body">${n.content}</div>`;
         html += `<div class="collab-diff-meta">`;
-        html += `<span class="cm-tag cm-type-${n.type}">${n.type === "teacher" ? "老师" : "学生"}</span>`;
-        html += `<span class="cm-tag cm-target">${n.target === "all" ? "全段" : `第${Number(n.target) + 1}小节`}</span>`;
-        html += `<span class="cm-tag ${n.resolved ? "cm-resolved" : "cm-pending"}">${n.resolved ? "已解决" : "未解决"}</span>`;
+        html += renderCollabNoteMeta(n);
         html += `</div>`;
         html += `</div></div>`;
       });
@@ -5266,9 +5294,7 @@ function renderVersionCompare(curSections, histSections, histName) {
         html += `<div class="collab-diff-content">`;
         html += `<div class="collab-diff-body">${n.content}</div>`;
         html += `<div class="collab-diff-meta">`;
-        html += `<span class="cm-tag cm-type-${n.type}">${n.type === "teacher" ? "老师" : "学生"}</span>`;
-        html += `<span class="cm-tag cm-target">${n.target === "all" ? "全段" : `第${Number(n.target) + 1}小节`}</span>`;
-        html += `<span class="cm-tag ${n.resolved ? "cm-resolved" : "cm-pending"}">${n.resolved ? "已解决" : "未解决"}</span>`;
+        html += renderCollabNoteMeta(n);
         html += `</div>`;
         html += `</div></div>`;
       });

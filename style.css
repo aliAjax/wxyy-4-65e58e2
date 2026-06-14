@@ -4002,6 +4002,31 @@ select {
   color: white;
 }
 
+.cm-tag.cm-assignee {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
+.cm-tag.cm-priority-high {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.cm-tag.cm-priority-medium {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.cm-tag.cm-priority-low {
+  background: #d1fae5;
+  color: #047857;
+}
+
+.cm-tag.cm-goal {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
 .vc-match-badge {
   display: inline-flex;
   align-items: center;
