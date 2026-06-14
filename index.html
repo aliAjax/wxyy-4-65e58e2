@@ -112,6 +112,7 @@
           <span class="token-hint"><span class="token-tag token-cai">才</span>=钹</span>
           <span class="token-hint"><span class="token-tag token-tai">台</span>=小锣</span>
           ，休止用 <code>0</code>、<code>乙</code>、<code>×</code> 或留空。
+          <br><strong>多段落输入：</strong>每行以 <code>#</code>、<code>##</code>、<code>===</code> 开头标记段落，格式如 <code># 段落名: 120 BPM [1-4小节]</code>，每个段落下方写入口令。小节范围可选，不写则自动计算。
           <button type="button" class="toggle-ref-btn" id="toggleRefBtn">查看完整对照表 ▾</button>
         </p>
         <div class="token-ref-panel" id="tokenRefPanel">
@@ -150,7 +151,7 @@
         </div>
       </div>
       <div class="import-body">
-        <textarea id="commandInput" placeholder="例如：仓 才 仓 才 || 冬 冬 台 台 || 匡令 呛台 仓 冬 || 乙 才 0 才&#10;支持别名：匡→仓、咚→冬、七→才、令→台 等，一拍多字连写如「匡令」表示同时击打"></textarea>
+        <textarea id="commandInput" placeholder="例如：仓 才 仓 才 || 冬 冬 台 台 || 匡令 呛台 仓 冬 || 乙 才 0 才&#10;多段落：# 段落名: 120BPM [1-4小节]&#10;支持别名：匡→仓、咚→冬、七→才、令→台 等，一拍多字连写如「匡令」表示同时击打"></textarea>
         <div class="import-actions">
           <button type="button" id="parseBtn" class="parse-btn">🔍 解析预览</button>
           <button type="button" id="confirmBtn" class="confirm-btn" disabled>✓ 确认写入网格</button>

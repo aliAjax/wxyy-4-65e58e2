@@ -31,7 +31,8 @@ function deepCloneSection(section) {
       : instruments.map(() => Array(steps).fill("")),
     enabledInstruments: Array.isArray(section.enabledInstruments)
       ? [...section.enabledInstruments]
-      : [true, true, true, true]
+      : [true, true, true, true],
+    measureRange: section.measureRange ? { ...section.measureRange } : null
   };
 }
 
@@ -80,7 +81,8 @@ function createDefaultSection(name = "段落 1") {
         index % 4 === 0 ? instrument.token : ""
       )
     ),
-    enabledInstruments: [true, true, true, true]
+    enabledInstruments: [true, true, true, true],
+    measureRange: null
   };
 }
 
@@ -188,7 +190,8 @@ function migrateOldFormat(oldState) {
           ),
       enabledInstruments: Array.isArray(oldState.enabledInstruments)
         ? [...oldState.enabledInstruments]
-        : [true, true, true, true]
+        : [true, true, true, true],
+      measureRange: oldState.measureRange ? { ...oldState.measureRange } : null
     };
     result = {
       pieceName: oldState.pieceName || "出场锣鼓-慢起",
@@ -389,6 +392,8 @@ const importError = document.querySelector("#importError");
 const importPreview = document.querySelector("#importPreview");
 const previewGrid = document.querySelector("#previewGrid");
 const importSummary = document.querySelector("#importSummary");
+const writeModeRadios = document.querySelectorAll('input[name="writeMode"]');
+const previewSectionsContainer = document.querySelector("#previewSectionsContainer");
 const sectionsList = document.querySelector("#sectionsList");
 const addSectionBtn = document.querySelector("#addSectionBtn");
 const continuousPlayCheckbox = document.querySelector("#continuousPlay");
@@ -442,8 +447,8 @@ const tempoBeatsValue = document.querySelector("#tempoBeatsValue");
 const tempoProgressFill = document.querySelector("#tempoProgressFill");
 const tempoProgressText = document.querySelector("#tempoProgressText");
 
-const SCHEMA_VERSION = 2;
-const SUPPORTED_VERSIONS = [1, 2];
+const SCHEMA_VERSION = 3;
+const SUPPORTED_VERSIONS = [1, 2, 3];
 
 let parsedPattern = null;
 let editingSectionId = null;
@@ -451,6 +456,7 @@ let parsedSchemeData = null;
 let parsedSchemeIsImportToList = false;
 let parsedSchemeCompatibility = null;
 let pendingImportToList = false;
+let parsedWriteMode = "merge";
 
 function getCurrentSection() {
   return state.sections.find((s) => s.id === state.currentSectionId);
@@ -482,6 +488,9 @@ function renderSectionsList() {
       const isEditing = editingSectionId === section.id;
       const noteCount = section.notes.length;
       const filledCount = section.pattern.flat().filter(Boolean).length;
+      const rangeText = section.measureRange
+        ? `${section.measureRange.start}-${section.measureRange.end}小节`
+        : "";
       return `
         <div class="section-item ${isActive ? "active" : ""}" data-section-id="${section.id}">
           <span class="section-order">${index + 1}</span>
@@ -489,7 +498,7 @@ function renderSectionsList() {
             ${isEditing
               ? `<input type="text" class="section-name-input" value="${section.name}" data-section-rename="${section.id}" autofocus>`
               : `<div class="section-name">${section.name}</div>
-                 <div class="section-meta">${section.bpm}BPM · ${noteCount}条批注 · ${filledCount}个口令</div>`
+                 <div class="section-meta">${section.bpm}BPM${rangeText ? ` · ${rangeText}` : ""} · ${noteCount}条批注 · ${filledCount}个口令</div>`
             }
           </div>
           <div class="section-item-btns">
@@ -1185,22 +1194,21 @@ const aliasLabels = {
   3: ["台", "令", "另", "当", "来"]
 };
 
-function parseCommand(input) {
+function parseSinglePattern(input) {
   const trimmed = input.trim();
   if (!trimmed) {
-    throw new Error("请输入锣鼓经口令。");
+    return null;
   }
 
   const measureStrs = trimmed.split(/\|\|/).map(s => s.trim()).filter(Boolean);
   if (measureStrs.length === 0) {
-    throw new Error("未找到有效的小节内容，请检查分隔符是否正确。");
+    return null;
   }
   if (measureStrs.length > 4) {
     throw new Error(`最多支持 4 小节，当前输入了 ${measureStrs.length} 小节。`);
   }
 
   const pattern = instruments.map(() => Array(steps).fill(""));
-  let currentStep = 0;
   const warnings = [];
   const aliasConversions = [];
 
@@ -1265,6 +1273,125 @@ function parseCommand(input) {
   return { pattern, warnings, measureCount: measureStrs.length, aliasConversions };
 }
 
+function parseSectionHeader(line) {
+  const headerRe = /^(?:#{1,3}|={3,}|-{3,})\s*(.+?)\s*(?:={3,}|-{3,})?\s*$/;
+  const match = line.trim().match(headerRe);
+  if (!match) return null;
+
+  const headerContent = match[1].trim();
+  let name = headerContent;
+  let bpm = 96;
+  let measureRange = null;
+
+  const bpmMatch = headerContent.match(/[@:：]\s*(\d{2,3})\s*(?:BPM|bpm)?/i) ||
+                   headerContent.match(/(\d{2,3})\s*(?:BPM|bpm)/i);
+  if (bpmMatch) {
+    bpm = parseInt(bpmMatch[1]);
+    if (bpm < 40) bpm = 40;
+    if (bpm > 220) bpm = 220;
+    name = headerContent.replace(bpmMatch[0], "").trim().replace(/[@:：，,\s]+$/, "").trim();
+  }
+
+  const rangeMatch = name.match(/[([【〔]?\s*(?:小节\s*)?(\d+)\s*[-–—~～]\s*(?:小节\s*)?(\d+)\s*(?:小节)?\s*[)\]】〕]?/);
+  if (rangeMatch) {
+    const rangeStart = parseInt(rangeMatch[1]);
+    const rangeEnd = parseInt(rangeMatch[2]);
+    if (rangeStart >= 1 && rangeEnd >= rangeStart && rangeEnd <= 99) {
+      measureRange = { start: rangeStart, end: rangeEnd };
+      name = name.replace(rangeMatch[0], "").trim().replace(/[[([【〔\])】〕\s]+$/, "").trim();
+    }
+  }
+
+  if (!name) {
+    name = "未命名段落";
+  }
+
+  return { name, bpm, measureRange };
+}
+
+function computeMeasureRangeLabel(measureRange, measureCount) {
+  if (measureRange) {
+    return `${measureRange.start}-${measureRange.end}小节`;
+  }
+  return `${measureCount}小节`;
+}
+
+function parseCommand(input) {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    throw new Error("请输入锣鼓经口令。");
+  }
+
+  const lines = trimmed.split(/\r?\n/);
+  const sectionHeaders = [];
+  lines.forEach((line, idx) => {
+    const parsed = parseSectionHeader(line);
+    if (parsed) {
+      sectionHeaders.push({ lineIdx: idx, ...parsed });
+    }
+  });
+
+  if (sectionHeaders.length === 0) {
+    const result = parseSinglePattern(trimmed);
+    if (!result) {
+      throw new Error("未找到有效的小节内容，请检查分隔符是否正确。");
+    }
+    return {
+      isMultiSection: false,
+      sections: [{
+        name: "当前段落",
+        bpm: getCurrentSection()?.bpm || 96,
+        measureRange: null,
+        ...result
+      }]
+    };
+  }
+
+  const sections = [];
+  let autoMeasureOffset = 0;
+  for (let i = 0; i < sectionHeaders.length; i++) {
+    const header = sectionHeaders[i];
+    const nextHeader = sectionHeaders[i + 1];
+    const contentStart = header.lineIdx + 1;
+    const contentEnd = nextHeader ? nextHeader.lineIdx : lines.length;
+    const contentLines = lines.slice(contentStart, contentEnd);
+    const content = contentLines.join("\n").trim();
+
+    if (!content) continue;
+
+    try {
+      const parsed = parseSinglePattern(content);
+      if (parsed) {
+        let measureRange = header.measureRange;
+        if (!measureRange) {
+          measureRange = {
+            start: autoMeasureOffset + 1,
+            end: autoMeasureOffset + parsed.measureCount
+          };
+        }
+        sections.push({
+          name: header.name,
+          bpm: header.bpm,
+          measureRange,
+          ...parsed
+        });
+        autoMeasureOffset += parsed.measureCount;
+      }
+    } catch (error) {
+      throw new Error(`段落「${header.name}」解析失败：${error.message}`);
+    }
+  }
+
+  if (sections.length === 0) {
+    throw new Error("找到段落标题，但未找到有效的口令内容。请在每个标题下输入口令。");
+  }
+
+  return {
+    isMultiSection: sections.length > 1,
+    sections
+  };
+}
+
 function showError(message) {
   importError.innerHTML = `
     <strong>⚠️ 解析失败：</strong>${message}
@@ -1276,46 +1403,56 @@ function hideError() {
   importError.style.display = "none";
 }
 
-function renderPreview(parsed) {
-  const section = getCurrentSection();
-  if (!section) return;
-
-  const { pattern, warnings, measureCount } = parsed;
+function renderSingleSectionPreviewGrid(parsedSection, existingSection, sectionIndex, globalMeasureStart) {
+  const { pattern, warnings, measureCount, aliasConversions, measureRange } = parsedSection;
   const totalFilled = pattern.flat().filter(Boolean).length;
 
-  let summary = `解析成功：共 <strong>${measureCount} 小节</strong>，<strong>${totalFilled} 个口令</strong>`;
+  let sectionInfo = `<div class="preview-section-info">`;
+  if (sectionIndex != null) {
+    sectionInfo += `<span class="preview-section-index">段落 ${sectionIndex + 1}</span>`;
+  }
+
+  const rangeLabel = measureRange
+    ? `${measureRange.start}-${measureRange.end}小节`
+    : (globalMeasureStart != null
+        ? `${globalMeasureStart + 1}-${globalMeasureStart + measureCount}小节`
+        : `${measureCount}小节`);
+  sectionInfo += `<span class="section-range-badge">${rangeLabel}</span>`;
+
+  sectionInfo += `<strong>${parsedSection.name}</strong> · <span class="preview-bpm-badge">${parsedSection.bpm} BPM</span> · ${totalFilled} 个口令`;
+
   let willFillCount = 0;
   let willSkipCount = 0;
-
-  for (let r = 0; r < instruments.length; r++) {
-    for (let c = 0; c < steps; c++) {
-      if (pattern[r][c]) {
-        if (section.pattern[r][c]) {
-          willSkipCount++;
-        } else {
-          willFillCount++;
+  if (existingSection) {
+    for (let r = 0; r < instruments.length; r++) {
+      for (let c = 0; c < steps; c++) {
+        if (pattern[r][c]) {
+          if (existingSection.pattern[r][c]) {
+            willSkipCount++;
+          } else {
+            willFillCount++;
+          }
         }
       }
     }
+    if (willFillCount > 0) {
+      sectionInfo += ` · 填入 <span style="color:#047857">${willFillCount} 空格</span>`;
+    }
+    if (willSkipCount > 0) {
+      sectionInfo += ` · 跳过 <span style="color:#991b1b">${willSkipCount} 已有</span>`;
+    }
+  } else {
+    sectionInfo += ` · 新段落，<span style="color:#047857">${totalFilled} 口令待写入</span>`;
   }
+  sectionInfo += `</div>`;
 
-  summary += `，将填入 <strong style="color:#047857">${willFillCount} 个空格</strong>`;
-  if (willSkipCount > 0) {
-    summary += `，跳过 <strong style="color:#991b1b">${willSkipCount} 个已有内容</strong>`;
+  if (warnings && warnings.length > 0) {
+    sectionInfo += `<div style="font-size:12px;color:#b45309;margin-top:4px;">⚠️ ${warnings.join(" ")}</div>`;
   }
-  summary += "。";
-
-  if (warnings.length > 0) {
-    summary += `<br><span style="color:#b45309">⚠️ ${warnings.join(" ")}</span>`;
+  if (aliasConversions && aliasConversions.length > 0) {
+    const uniqueAliases = [...new Set(aliasConversions.map(a => `${a.from}→${a.to}（${a.instrument}）`))];
+    sectionInfo += `<div style="font-size:12px;color:#1d4ed8;margin-top:4px;">🔄 别名转换：${uniqueAliases.join("、")}</div>`;
   }
-
-  if (parsed.aliasConversions && parsed.aliasConversions.length > 0) {
-    const uniqueAliases = [...new Set(parsed.aliasConversions.map(a => `${a.from}→${a.to}（${a.instrument}）`))];
-    summary += `<br><span style="color:#1d4ed8">🔄 别名转换：${uniqueAliases.join("、")}</span>`;
-  }
-
-  importSummary.innerHTML = summary;
-  importSummary.style.display = "block";
 
   const header = ['<div class="preview-label-cell">乐器</div>'];
   for (let i = 0; i < steps; i += 1) {
@@ -1327,7 +1464,7 @@ function renderPreview(parsed) {
     const row = [`<div class="preview-label-cell">${instrument.name}</div>`];
     for (let step = 0; step < steps; step += 1) {
       const parsedValue = pattern[rowIndex][step];
-      const existingValue = section.pattern[rowIndex][step];
+      const existingValue = existingSection ? existingSection.pattern[rowIndex][step] : "";
       const measureDivider = (step + 1) % 4 === 0 && step < steps - 1 ? " preview-measure-divider" : "";
 
       let cellClass = "preview-cell" + measureDivider;
@@ -1349,13 +1486,124 @@ function renderPreview(parsed) {
     return row;
   });
 
-  previewGrid.innerHTML = `<div class="preview-grid-inner">${[...header, ...rows].join("")}</div>
-    <div style="margin-top: 10px; display: flex; gap: 16px; font-size: 12px; color: var(--muted);">
+  return `
+    <div class="preview-section-block">
+      ${sectionInfo}
+      <div class="preview-grid">
+        <div class="preview-grid-inner">${[...header, ...rows].join("")}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderPreview(parsed) {
+  if (!parsed || !parsed.sections || parsed.sections.length === 0) return;
+
+  const isMulti = parsed.isMultiSection || parsed.sections.length > 1;
+  const currentSection = getCurrentSection();
+
+  if (isMulti && parsedWriteMode === "merge") {
+    parsedWriteMode = "append";
+  }
+  const currentIdx = state.sections.findIndex(s => s.id === state.currentSectionId);
+
+  let summaryHtml = "";
+  if (isMulti) {
+    const totalMeasures = parsed.sections.reduce((sum, s) => sum + s.measureCount, 0);
+    const totalTokens = parsed.sections.reduce((sum, s) => sum + s.pattern.flat().filter(Boolean).length, 0);
+    const bpmList = [...new Set(parsed.sections.map(s => s.bpm))].join("/");
+    const sectionDetails = parsed.sections.map((s, i) => {
+      const range = s.measureRange ? `${s.measureRange.start}-${s.measureRange.end}小节` : `${s.measureCount}小节`;
+      return `${s.name}（${range}，${s.bpm}BPM）`;
+    }).join("、");
+    summaryHtml = `解析成功：共 <strong>${parsed.sections.length} 个段落</strong>，<strong>${totalMeasures} 小节</strong>，<strong>${totalTokens} 个口令</strong>，速度：<strong>${bpmList} BPM</strong>。<br><span class="preview-section-list">${sectionDetails}</span>`;
+  } else {
+    const s = parsed.sections[0];
+    const totalFilled = s.pattern.flat().filter(Boolean).length;
+    const range = s.measureRange ? `${s.measureRange.start}-${s.measureRange.end}小节` : `${s.measureCount}小节`;
+    summaryHtml = `解析成功：<strong>${range}</strong>，<strong>${totalFilled} 个口令</strong>，速度：<strong>${s.bpm} BPM</strong>。`;
+  }
+
+  importSummary.innerHTML = summaryHtml;
+  importSummary.style.display = "block";
+
+  const appendNote = isMulti && currentSection
+    ? `（在「${currentSection.name}」后插入）`
+    : "";
+
+  const overwriteNote = isMulti
+    ? `<div class="write-mode-hint">⚠️ 多段落覆盖：第1段覆盖当前段，其余自动追加为新段落</div>`
+    : "";
+
+  const mergeNote = !isMulti && currentSection
+    ? `<span class="write-mode-hint">当前段落：${currentSection.name}</span>`
+    : "";
+
+  const appendLabel = isMulti
+    ? `追加为新段落（${parsed.sections.length} 个）${appendNote}`
+    : "追加为新段落";
+
+  const overwriteLabel = isMulti
+    ? "覆盖当前段落（混合模式）"
+    : "覆盖当前段落";
+
+  const writeModeBar = `
+    <div class="write-mode-selector">
+      <span class="write-mode-label">写入方式：</span>
+      <label class="write-mode-option">
+        <input type="radio" name="writeMode" value="merge" ${parsedWriteMode === "merge" ? "checked" : ""} ${isMulti ? "disabled" : ""}>
+        <span>合并到当前段落（仅填空格）</span>
+      </label>
+      ${mergeNote}
+      <label class="write-mode-option">
+        <input type="radio" name="writeMode" value="overwrite" ${parsedWriteMode === "overwrite" ? "checked" : ""}>
+        <span>${overwriteLabel}</span>
+      </label>
+      <label class="write-mode-option">
+        <input type="radio" name="writeMode" value="append" ${parsedWriteMode === "append" || (isMulti && parsedWriteMode !== "overwrite") ? "checked" : ""}>
+        <span>${appendLabel}</span>
+      </label>
+      ${overwriteNote}
+    </div>
+  `;
+
+  let gridsHtml = "";
+  let measureOffset = 0;
+  if (isMulti && parsedWriteMode === "overwrite") {
+    gridsHtml = parsed.sections.map((s, idx) => {
+      const existing = idx === 0 ? currentSection : null;
+      const html = renderSingleSectionPreviewGrid(s, existing, idx, measureOffset);
+      measureOffset += s.measureCount;
+      return html;
+    }).join("");
+  } else if (isMulti || parsedWriteMode === "append") {
+    gridsHtml = parsed.sections.map((s, idx) => {
+      const html = renderSingleSectionPreviewGrid(s, null, idx, measureOffset);
+      measureOffset += s.measureCount;
+      return html;
+    }).join("");
+  } else {
+    gridsHtml = renderSingleSectionPreviewGrid(parsed.sections[0], currentSection, 0, 0);
+  }
+
+  const legend = `
+    <div style="margin-top: 10px; display: flex; gap: 16px; font-size: 12px; color: var(--muted); flex-wrap: wrap;">
       <span><span style="display:inline-block;width:14px;height:14px;background:#d1fae5;border-radius:3px;margin-right:4px;vertical-align:middle;"></span> 新填入</span>
       <span><span style="display:inline-block;width:14px;height:14px;background:#fff1d1;border-radius:3px;margin-right:4px;vertical-align:middle;"></span> 原有内容</span>
       <span><span style="display:inline-block;width:14px;height:14px;background:#fee2e2;border-radius:3px;margin-right:4px;vertical-align:middle;position:relative;"><span style="position:absolute;top:-2px;right:1px;font-size:9px;color:var(--accent);font-weight:900;">×</span></span> 跳过（已有内容）</span>
     </div>
   `;
+
+  previewGrid.innerHTML = writeModeBar + gridsHtml + legend;
+
+  const newWriteRadios = previewGrid.querySelectorAll('input[name="writeMode"]');
+  newWriteRadios.forEach(radio => {
+    radio.addEventListener("change", (e) => {
+      parsedWriteMode = e.target.value;
+      renderPreview(parsedPattern);
+    });
+  });
+
   importPreview.style.display = "block";
 }
 
@@ -1369,35 +1617,150 @@ function resetImportState() {
 }
 
 function applyParsedPattern() {
-  if (!parsedPattern) return;
-  const section = getCurrentSection();
-  if (!section) return;
+  if (!parsedPattern || !parsedPattern.sections || parsedPattern.sections.length === 0) return;
 
   let filledCount = 0;
   let skippedCount = 0;
+  let appendedCount = 0;
+  let overwrittenCount = 0;
+  let message = "";
 
-  for (let r = 0; r < instruments.length; r++) {
-    for (let c = 0; c < steps; c++) {
-      const parsedValue = parsedPattern.pattern[r][c];
-      if (parsedValue && !section.pattern[r][c]) {
-        section.pattern[r][c] = parsedValue;
-        filledCount++;
-      } else if (parsedValue && section.pattern[r][c]) {
-        skippedCount++;
+  const isMulti = parsedPattern.isMultiSection || parsedPattern.sections.length > 1;
+
+  if (parsedWriteMode === "append") {
+    const currentIdx = state.sections.findIndex((s) => s.id === state.currentSectionId);
+    const insertIdx = currentIdx >= 0 ? currentIdx + 1 : state.sections.length;
+
+    parsedPattern.sections.forEach((parsedSection) => {
+      const newSection = createDefaultSection(parsedSection.name);
+      newSection.bpm = parsedSection.bpm;
+      if (parsedSection.measureRange) {
+        newSection.measureRange = { ...parsedSection.measureRange };
       }
+      for (let r = 0; r < instruments.length; r++) {
+        for (let c = 0; c < steps; c++) {
+          if (parsedSection.pattern[r][c]) {
+            newSection.pattern[r][c] = parsedSection.pattern[r][c];
+            filledCount++;
+          }
+        }
+      }
+      state.sections.splice(insertIdx + appendedCount, 0, newSection);
+      appendedCount++;
+    });
+
+    state.currentSectionId = state.sections[insertIdx].id;
+    message = `✓ 已追加 <strong>${appendedCount}</strong> 个新段落，共写入 <strong>${filledCount}</strong> 个口令。`;
+
+  } else if (isMulti && parsedWriteMode === "overwrite") {
+    const currentSection = getCurrentSection();
+    if (!currentSection) return;
+    const currentIdx = state.sections.findIndex((s) => s.id === state.currentSectionId);
+    const insertIdx = currentIdx + 1;
+
+    const firstParsed = parsedPattern.sections[0];
+    currentSection.bpm = firstParsed.bpm;
+    if (firstParsed.name && firstParsed.name !== "当前段落") {
+      currentSection.name = firstParsed.name;
+    }
+    if (firstParsed.measureRange) {
+      currentSection.measureRange = { ...firstParsed.measureRange };
+    }
+    for (let r = 0; r < instruments.length; r++) {
+      for (let c = 0; c < steps; c++) {
+        if (firstParsed.pattern[r][c]) {
+          currentSection.pattern[r][c] = firstParsed.pattern[r][c];
+          filledCount++;
+        } else {
+          if (currentSection.pattern[r][c]) {
+            overwrittenCount++;
+          }
+          currentSection.pattern[r][c] = "";
+        }
+      }
+    }
+
+    for (let i = 1; i < parsedPattern.sections.length; i++) {
+      const parsedSection = parsedPattern.sections[i];
+      const newSection = createDefaultSection(parsedSection.name);
+      newSection.bpm = parsedSection.bpm;
+      if (parsedSection.measureRange) {
+        newSection.measureRange = { ...parsedSection.measureRange };
+      }
+      for (let r = 0; r < instruments.length; r++) {
+        for (let c = 0; c < steps; c++) {
+          if (parsedSection.pattern[r][c]) {
+            newSection.pattern[r][c] = parsedSection.pattern[r][c];
+            filledCount++;
+          }
+        }
+      }
+      state.sections.splice(insertIdx + appendedCount, 0, newSection);
+      appendedCount++;
+    }
+
+    message = `✓ 混合模式：覆盖当前段落，追加 <strong>${appendedCount}</strong> 个段。共写入 <strong>${filledCount}</strong> 口令，清空 <strong>${overwrittenCount}</strong> 原有。`;
+
+  } else if (parsedWriteMode === "overwrite") {
+    const section = getCurrentSection();
+    if (!section) return;
+    const parsedSection = parsedPattern.sections[0];
+
+    section.bpm = parsedSection.bpm;
+    if (parsedSection.name && parsedSection.name !== "当前段落") {
+      section.name = parsedSection.name;
+    }
+    if (parsedSection.measureRange) {
+      section.measureRange = { ...parsedSection.measureRange };
+    }
+    for (let r = 0; r < instruments.length; r++) {
+      for (let c = 0; c < steps; c++) {
+        if (parsedSection.pattern[r][c]) {
+          section.pattern[r][c] = parsedSection.pattern[r][c];
+          filledCount++;
+        } else {
+          if (section.pattern[r][c]) {
+            overwrittenCount++;
+          }
+          section.pattern[r][c] = "";
+        }
+      }
+    }
+    message = `✓ 已覆盖当前段落，写入 <strong>${filledCount}</strong> 个口令，清空 <strong>${overwrittenCount}</strong> 个原有口令。`;
+
+  } else {
+    const section = getCurrentSection();
+    if (!section) return;
+    const parsedSection = parsedPattern.sections[0];
+
+    section.bpm = parsedSection.bpm;
+    if (parsedSection.name && parsedSection.name !== "当前段落") {
+      section.name = parsedSection.name;
+    }
+    if (parsedSection.measureRange) {
+      section.measureRange = { ...parsedSection.measureRange };
+    }
+    for (let r = 0; r < instruments.length; r++) {
+      for (let c = 0; c < steps; c++) {
+        const parsedValue = parsedSection.pattern[r][c];
+        if (parsedValue && !section.pattern[r][c]) {
+          section.pattern[r][c] = parsedValue;
+          filledCount++;
+        } else if (parsedValue && section.pattern[r][c]) {
+          skippedCount++;
+        }
+      }
+    }
+    message = `✓ 已成功写入 <strong>${filledCount}</strong> 个口令`;
+    if (skippedCount > 0) {
+      message += `，已跳过 <strong>${skippedCount}</strong> 个已有内容。`;
+    } else {
+      message += "。";
     }
   }
 
   save();
   render();
-
-  let message = `✓ 已成功写入 <strong>${filledCount}</strong> 个口令`;
-  if (skippedCount > 0) {
-    message += `，已跳过 <strong>${skippedCount}</strong> 个已有内容。`;
-  } else {
-    message += "。";
-  }
-
   importSummary.innerHTML = message;
   resetImportState();
   commandInput.value = "";
@@ -2228,6 +2591,19 @@ function validateAndMigrateScheme(data) {
     } else if (section.pattern.length !== instruments.length) {
       compatibility.warnings.push(`第 ${idx + 1} 个段落乐器数量不匹配，将自动调整。`);
     }
+    if (!section.measureRange && fileVersion < 3) {
+      const measureCount = Math.max(1, Math.ceil(
+        section.pattern
+          ? section.pattern[0]?.filter((c, i) =>
+              section.pattern.some(row => row[i])
+            ).length / 4
+          : 4
+      ));
+      section.measureRange = {
+        start: idx * 4 + 1,
+        end: idx * 4 + Math.min(measureCount, 4)
+      };
+    }
   });
 
   if (!migratedData.pieceName) {
@@ -2291,6 +2667,7 @@ function calculateSchemeStats(data) {
     noteCount: 0,
     gridSize: `${instruments.length}×${steps}`,
     sectionCount: 0,
+    totalMeasures: 0,
     version: data.schemaVersion || 1
   };
 
@@ -2302,6 +2679,9 @@ function calculateSchemeStats(data) {
     data.sections.forEach((section) => {
       if (Array.isArray(section.notes)) {
         stats.noteCount += section.notes.length;
+      }
+      if (section.measureRange) {
+        stats.totalMeasures = Math.max(stats.totalMeasures, section.measureRange.end);
       }
     });
   } else {
@@ -2320,7 +2700,7 @@ function renderSchemePreview(data, compatibility, isImportToList) {
   previewSchemeBpm.textContent = `${stats.bpm} BPM`;
   previewSchemeNotes.textContent = `${stats.noteCount} 条`;
   previewSchemeGrid.textContent = stats.gridSize;
-  previewSchemeSections.textContent = `${stats.sectionCount} 个`;
+  previewSchemeSections.textContent = `${stats.sectionCount} 个${stats.totalMeasures > 0 ? ` · 共${stats.totalMeasures}小节` : ""}`;
   previewSchemeVersion.textContent = `v${stats.version}`;
 
   if (compatibility.errors.length > 0 || compatibility.warnings.length > 0 || compatibility.infos.length > 0) {
