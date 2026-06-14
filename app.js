@@ -2812,8 +2812,8 @@ sectionsList.addEventListener("click", (event) => {
     const id = saveMeasureBtn.dataset.saveMeasure;
     const section = state.sections.find((s) => s.id === id);
     if (section) {
-      const mcInput = sectionsList.querySelector(`[data-measure-count-input="${id}"]`);
-      const bpmInput = sectionsList.querySelector(`[data-beats-input="${id}"]`);
+      const mcInput = sectionsList.querySelector(`[data-mc-section="${id}"]`);
+      const bpmInput = sectionsList.querySelector(`[data-bpm-section="${id}"]`);
       if (mcInput && bpmInput) {
         resizeSectionPattern(section, mcInput.value, bpmInput.value);
       }
@@ -2909,12 +2909,12 @@ sectionsList.addEventListener("keydown", (event) => {
   }
   const isMcInput = event.target.classList.contains("measure-count-input");
   const isBpmInput = event.target.classList.contains("beats-input");
-  const sectionId = event.target.dataset?.measureCountInput || event.target.dataset?.beatsInput;
+  const sectionId = event.target.dataset?.mcSection || event.target.dataset?.bpmSection;
   if ((isMcInput || isBpmInput) && event.key === "Enter" && sectionId) {
     const section = state.sections.find((s) => s.id === sectionId);
     if (section) {
-      const mcInput = sectionsList.querySelector(`[data-measure-count-input="${sectionId}"]`);
-      const bpmInput = sectionsList.querySelector(`[data-beats-input="${sectionId}"]`);
+      const mcInput = sectionsList.querySelector(`[data-mc-section="${sectionId}"]`);
+      const bpmInput = sectionsList.querySelector(`[data-bpm-section="${sectionId}"]`);
       if (mcInput && bpmInput) {
         resizeSectionPattern(section, mcInput.value, bpmInput.value);
       }
@@ -4303,7 +4303,7 @@ function diagnosisTick() {
   if (!section) return;
 
   const diagnosisStart = 0;
-  const diagnosisEnd = steps - 1;
+  const diagnosisEnd = getSectionSteps(section) - 1;
   if (playhead < diagnosisStart || playhead > diagnosisEnd) playhead = diagnosisStart;
 
   const nextQuestion = diagnosisHiddenCells[diagnosisCurrentStep];
@@ -5591,7 +5591,7 @@ function renderVersionCompare(curSections, histSections, histName) {
         curSection: null
       };
       for (let row = 0; row < instruments.length; row++) {
-        for (let step = 0; step < steps; step++) {
+        for (let step = 0; step < getSectionSteps(hist); step++) {
           const val = (hist.pattern[row] && hist.pattern[row][step]) || "";
           if (val) {
             diff.gridDiff.push({ row, step, instrument: instruments[row].name, curVal: "", histVal: val });
@@ -5741,9 +5741,14 @@ function renderVersionCompare(curSections, histSections, histName) {
       html += `<div class="vc-diff-label"><span class="diff-icon changed"></span> 口令网格 <span style="font-weight:400;font-size:11px;">（点击拍行可选中恢复）</span></div>`;
       html += `<div class="vc-grid-diff"><table>`;
 
+      const vcRefSection = diff.histSection || diff.curSection;
+      const vcCurSteps = getSectionSteps(diff.curSection || { measureCount: 4, beatsPerMeasure: 4 });
+      const vcHistSteps = getSectionSteps(diff.histSection || { measureCount: 4, beatsPerMeasure: 4 });
+      const vcMaxSteps = Math.max(vcCurSteps, vcHistSteps);
+
       html += `<tr><th></th>`;
-      for (let s = 0; s < steps; s++) {
-        html += `<th>${beatLabel(s)}</th>`;
+      for (let s = 0; s < vcMaxSteps; s++) {
+        html += `<th>${beatLabel(s, vcRefSection)}</th>`;
       }
       html += `</tr>`;
 
@@ -5751,7 +5756,7 @@ function renderVersionCompare(curSections, histSections, histName) {
 
       for (let row = 0; row < instruments.length; row++) {
         html += `<tr><td class="inst-label">${instruments[row].name}</td>`;
-        for (let s = 0; s < steps; s++) {
+        for (let s = 0; s < vcMaxSteps; s++) {
           const change = diff.gridDiff.find(d => d.row === row && d.step === s);
           if (change) {
             const histDisplay = change.histVal || "∅";
@@ -5767,7 +5772,7 @@ function renderVersionCompare(curSections, histSections, histName) {
       const changedStepList = [...changedSteps].sort((a, b) => a - b);
       if (changedStepList.length > 0 && (diff.histSection || diff.status === "new")) {
         html += `<tr class="beat-select-row"><td class="inst-label" style="font-size:11px;">选择拍</td>`;
-        for (let s = 0; s < steps; s++) {
+        for (let s = 0; s < vcMaxSteps; s++) {
           const isChanged = changedSteps.has(s);
           const beatKey = `${pairKey}::${s}`;
           const isBeatSelected = vcSelectedBeats[beatKey] || false;
@@ -5971,9 +5976,11 @@ function restoreFromCompare(restoreAll) {
 
       if (selectedBeatInfo[pairKey] && selectedBeatInfo[pairKey].size > 0) {
         const beatsToRestore = selectedBeatInfo[pairKey];
+        const histSteps = getSectionSteps(histSection);
+        const curSteps = getSectionSteps(curSection);
         for (let row = 0; row < instruments.length; row++) {
           for (const step of beatsToRestore) {
-            if (step < steps && histSection.pattern[row] && histSection.pattern[row][step] !== undefined) {
+            if (step < histSteps && step < curSteps && histSection.pattern[row] && histSection.pattern[row][step] !== undefined) {
               curSection.pattern[row][step] = histSection.pattern[row][step];
             }
           }
@@ -6008,7 +6015,9 @@ function restoreFromCompare(restoreAll) {
       if (!curSection) return;
 
       for (let row = 0; row < instruments.length; row++) {
-        if (histSection.pattern[row] && histSection.pattern[row][step] !== undefined) {
+        const curSteps2 = getSectionSteps(curSection);
+        const histSteps2 = getSectionSteps(histSection);
+        if (step < curSteps2 && step < histSteps2 && histSection.pattern[row] && histSection.pattern[row][step] !== undefined) {
           curSection.pattern[row][step] = histSection.pattern[row][step];
         }
       }
