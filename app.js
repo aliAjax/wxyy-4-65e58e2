@@ -2197,6 +2197,9 @@ parseBtn.addEventListener("click", () => {
   importSummary.style.display = "none";
   try {
     parsedPattern = parseCommand(commandInput.value);
+    parsedWriteMode = (parsedPattern.isMultiSection || parsedPattern.sections.length > 1)
+      ? "append"
+      : "merge";
     renderPreview(parsedPattern);
     confirmBtn.disabled = false;
     cancelBtn.disabled = false;
