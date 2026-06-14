@@ -4027,6 +4027,11 @@ select {
   color: #1d4ed8;
 }
 
+.cm-tag.cm-completion {
+  background: #ecfdf5;
+  color: #166534;
+}
+
 .vc-match-badge {
   display: inline-flex;
   align-items: center;

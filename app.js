@@ -5276,6 +5276,7 @@ function renderVersionCompare(curSections, histSections, histName) {
         if (n.assignee) meta += `<span class="cm-tag cm-assignee">👤${getAssigneeLabel(n.assignee)}</span>`;
         if (n.priority) meta += `<span class="cm-tag cm-priority-${n.priority}">${PRIORITY_ICONS[n.priority] || ""}${PRIORITY_LABELS[n.priority] || n.priority}</span>`;
         if (n.practiceGoal > 0) meta += `<span class="cm-tag cm-goal">🎯${n.practiceGoal}次</span>`;
+        if (n.completionNote) meta += `<span class="cm-tag cm-completion">完成说明：${n.completionNote}</span>`;
         return meta;
       };
       collabAdded.forEach(n => {
