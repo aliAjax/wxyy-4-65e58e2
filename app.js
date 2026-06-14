@@ -12,8 +12,37 @@ const steps = 16;
 const collabFilters = {
   type: "all",
   status: "all",
+  assignee: "all",
+  priority: "all",
   sort: "newest"
 };
+
+const PRIORITY_LEVELS = {
+  HIGH: "high",
+  MEDIUM: "medium",
+  LOW: "low"
+};
+
+const PRIORITY_LABELS = {
+  high: "高优先",
+  medium: "中优先",
+  low: "低优先"
+};
+
+const PRIORITY_ICONS = {
+  high: "🔴",
+  medium: "🟡",
+  low: "🟢"
+};
+
+const ASSIGNEES = [
+  { value: "teacher1", label: "张老师" },
+  { value: "teacher2", label: "李老师" },
+  { value: "student1", label: "学生甲" },
+  { value: "student2", label: "学生乙" },
+  { value: "student3", label: "学生丙" },
+  { value: "other", label: "其他" }
+];
 
 function deepCloneSection(section) {
   if (!section) return null;
@@ -156,19 +185,43 @@ function migrateNotesToCollabNotes(section) {
   });
 }
 
+function migrateCollabNoteToTaskFormat(note) {
+  if (!note || typeof note !== "object") return note;
+  if (note._taskMigrated) return note;
+  const defaultAssignee = note.type === "teacher" ? "teacher1" : "student1";
+  return {
+    ...note,
+    assignee: note.assignee || defaultAssignee,
+    priority: note.priority || PRIORITY_LEVELS.MEDIUM,
+    practiceGoal: typeof note.practiceGoal === "number" ? note.practiceGoal : 0,
+    completionNote: note.completionNote || "",
+    _taskMigrated: true
+  };
+}
+
+function migrateAllCollabNotesToTasks(section) {
+  if (!section || !Array.isArray(section.collabNotes)) return;
+  section.collabNotes = section.collabNotes.map(migrateCollabNoteToTaskFormat);
+}
+
 function migrateAllSectionsToCollabNotes(state) {
   if (!state || !Array.isArray(state.sections)) return;
   state.sections.forEach(section => {
     migrateNotesToCollabNotes(section);
+    migrateAllCollabNotesToTasks(section);
   });
   if (Array.isArray(state.saved)) {
     state.saved.forEach(savedItem => {
       if (Array.isArray(savedItem.sections)) {
         savedItem.sections.forEach(section => {
           migrateNotesToCollabNotes(section);
+          migrateAllCollabNotesToTasks(section);
         });
       } else if (savedItem.notes) {
         migrateNotesToCollabNotes(savedItem);
+        if (savedItem.collabNotes) {
+          migrateAllCollabNotesToTasks(savedItem);
+        }
       }
     });
   }
@@ -433,6 +486,9 @@ const schemeCancelBtn = document.querySelector("#schemeCancelBtn");
 const collabNoteInput = document.querySelector("#collabNoteInput");
 const collabAddBtn = document.querySelector("#collabAddBtn");
 const collabTargetSelect = document.querySelector("#collabTargetSelect");
+const collabAssigneeSelect = document.querySelector("#collabAssigneeSelect");
+const collabPrioritySelect = document.querySelector("#collabPrioritySelect");
+const collabPracticeGoal = document.querySelector("#collabPracticeGoal");
 const collabNotesList = document.querySelector("#collabNotesList");
 const teacherCountEl = document.querySelector("#teacherCount");
 const studentCountEl = document.querySelector("#studentCount");
@@ -441,6 +497,8 @@ const resolvedCountEl = document.querySelector("#resolvedCount");
 const collabTypeBtns = document.querySelectorAll(".collab-type-btn");
 const filterTypeBtns = document.querySelectorAll("[data-filter-type]");
 const filterStatusBtns = document.querySelectorAll("[data-filter-status]");
+const filterAssigneeBtns = document.querySelectorAll("[data-filter-assignee]");
+const filterPriorityBtns = document.querySelectorAll("[data-filter-priority]");
 const sortBtns = document.querySelectorAll("[data-sort]");
 
 const tempoTrainerSection = document.querySelector("#tempoTrainer");
@@ -461,8 +519,8 @@ const tempoBeatsValue = document.querySelector("#tempoBeatsValue");
 const tempoProgressFill = document.querySelector("#tempoProgressFill");
 const tempoProgressText = document.querySelector("#tempoProgressText");
 
-const SCHEMA_VERSION = 3;
-const SUPPORTED_VERSIONS = [1, 2, 3];
+const SCHEMA_VERSION = 4;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4];
 
 let parsedPattern = null;
 let editingSectionId = null;
@@ -559,13 +617,16 @@ function renderGrid() {
     const measure = Math.floor(i / 4);
     const noteTypes = measureNoteTypes[measure];
     let noteClass = "";
-    if (noteTypes && noteTypes.size > 0) {
-      if (noteTypes.has("teacher") && noteTypes.has("student")) {
+    if (noteTypes && noteTypes.types && noteTypes.types.size > 0) {
+      if (noteTypes.types.has("teacher") && noteTypes.types.has("student")) {
         noteClass = " has-notes has-both-notes";
-      } else if (noteTypes.has("teacher")) {
+      } else if (noteTypes.types.has("teacher")) {
         noteClass = " has-notes has-teacher-notes";
-      } else if (noteTypes.has("student")) {
+      } else if (noteTypes.types.has("student")) {
         noteClass = " has-notes has-student-notes";
+      }
+      if (noteTypes.hasHighPriority) {
+        noteClass += " has-high-priority";
       }
     }
 
@@ -597,13 +658,16 @@ function renderGrid() {
       const measure = Math.floor(step / 4);
       const noteTypes = measureNoteTypes[measure];
       let noteClass = "";
-      if (noteTypes && noteTypes.size > 0 && !diagnosisMode) {
-        if (noteTypes.has("teacher") && noteTypes.has("student")) {
+      if (noteTypes && noteTypes.types && noteTypes.types.size > 0 && !diagnosisMode) {
+        if (noteTypes.types.has("teacher") && noteTypes.types.has("student")) {
           noteClass = " has-notes has-both-notes";
-        } else if (noteTypes.has("teacher")) {
+        } else if (noteTypes.types.has("teacher")) {
           noteClass = " has-notes has-teacher-notes";
-        } else if (noteTypes.has("student")) {
+        } else if (noteTypes.types.has("student")) {
           noteClass = " has-notes has-student-notes";
+        }
+        if (noteTypes.hasHighPriority) {
+          noteClass += " has-high-priority";
         }
       }
 
@@ -634,7 +698,7 @@ function getCurrentCollabType() {
   return checked ? checked.value : "teacher";
 }
 
-function createCollabNote(content, type, target) {
+function createCollabNote(content, type, target, assignee, priority, practiceGoal) {
   const section = getCurrentSection();
   if (!section) return;
   const now = new Date().toISOString();
@@ -644,10 +708,28 @@ function createCollabNote(content, type, target) {
     content: content.trim(),
     target: target === "all" ? "all" : Number(target),
     resolved: false,
+    assignee: assignee || (type === "teacher" ? "teacher1" : "student1"),
+    priority: priority || PRIORITY_LEVELS.MEDIUM,
+    practiceGoal: typeof practiceGoal === "number" ? practiceGoal : 0,
+    completionNote: "",
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
+    _taskMigrated: true
   };
   section.collabNotes.unshift(note);
+  save();
+  renderCollabNotes();
+  renderGrid();
+  renderDashboard();
+}
+
+function updateCollabNote(noteId, updates) {
+  const section = getCurrentSection();
+  if (!section) return;
+  const note = section.collabNotes.find(n => n.id === noteId);
+  if (!note) return;
+  Object.assign(note, updates);
+  note.updatedAt = new Date().toISOString();
   save();
   renderCollabNotes();
   renderGrid();
@@ -688,8 +770,22 @@ function getFilteredCollabNotes() {
   if (collabFilters.status !== "all") {
     notes = notes.filter(n => collabFilters.status === "resolved" ? n.resolved : !n.resolved);
   }
+  if (collabFilters.assignee !== "all") {
+    notes = notes.filter(n => n.assignee === collabFilters.assignee);
+  }
+  if (collabFilters.priority !== "all") {
+    notes = notes.filter(n => n.priority === collabFilters.priority);
+  }
   if (collabFilters.sort === "newest") {
     notes.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  } else if (collabFilters.sort === "priority") {
+    const priorityOrder = { high: 0, medium: 1, low: 2 };
+    notes.sort((a, b) => {
+      const pa = priorityOrder[a.priority] ?? 1;
+      const pb = priorityOrder[b.priority] ?? 1;
+      if (pa !== pb) return pa - pb;
+      return new Date(b.createdAt) - new Date(a.createdAt);
+    });
   } else {
     notes.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
   }
@@ -718,12 +814,18 @@ function getMeasureNoteTypes() {
   section.collabNotes.forEach(note => {
     if (note.target === "all") {
       for (let i = 0; i < 4; i++) {
-        if (!measureTypes[i]) measureTypes[i] = new Set();
-        measureTypes[i].add(note.type);
+        if (!measureTypes[i]) measureTypes[i] = { types: new Set(), hasHighPriority: false };
+        measureTypes[i].types.add(note.type);
+        if (!note.resolved && note.priority === PRIORITY_LEVELS.HIGH) {
+          measureTypes[i].hasHighPriority = true;
+        }
       }
     } else {
-      if (!measureTypes[note.target]) measureTypes[note.target] = new Set();
-      measureTypes[note.target].add(note.type);
+      if (!measureTypes[note.target]) measureTypes[note.target] = { types: new Set(), hasHighPriority: false };
+      measureTypes[note.target].types.add(note.type);
+      if (!note.resolved && note.priority === PRIORITY_LEVELS.HIGH) {
+        measureTypes[note.target].hasHighPriority = true;
+      }
     }
   });
   return measureTypes;
@@ -748,6 +850,11 @@ function renderCollabStats() {
   if (resolvedCountEl) resolvedCountEl.textContent = stats.resolved;
 }
 
+function getAssigneeLabel(value) {
+  const assignee = ASSIGNEES.find(a => a.value === value);
+  return assignee ? assignee.label : value;
+}
+
 function renderCollabNotes() {
   const section = getCurrentSection();
   if (!section || !collabNotesList) return;
@@ -756,8 +863,8 @@ function renderCollabNotes() {
   if (notes.length === 0) {
     collabNotesList.innerHTML = `
       <div class="empty-collab-notes">
-        暂无协作批注<br>
-        在上方输入框添加老师批注或学生反馈
+        暂无任务批注<br>
+        在上方添加老师批注或学生反馈任务
       </div>
     `;
     return;
@@ -770,23 +877,41 @@ function renderCollabNotes() {
     const resolvedClass = note.resolved ? "resolved" : "";
     const targetClass = note.target === "all" ? "target-all" : "target-measure";
     const statusClass = note.resolved ? "status-resolved" : "status-pending";
+    const priorityClass = `priority-${note.priority || "medium"}`;
+    const priorityLabel = PRIORITY_LABELS[note.priority] || PRIORITY_LABELS.medium;
+    const priorityIcon = PRIORITY_ICONS[note.priority] || PRIORITY_ICONS.medium;
+    const assigneeLabel = getAssigneeLabel(note.assignee);
     const resolveBtn = note.resolved
       ? `<button type="button" class="collab-action-btn unresolve-btn" data-collab-unresolve="${note.id}" title="标记为未解决">↩</button>`
       : `<button type="button" class="collab-action-btn resolve-btn" data-collab-resolve="${note.id}" title="标记为已解决">✓</button>`;
+    
+    const practiceGoalText = note.practiceGoal > 0 
+      ? `<span class="collab-tag goal-tag">🎯 ${note.practiceGoal}次练习</span>` 
+      : "";
+    
+    const completionNoteText = note.resolved && note.completionNote
+      ? `<div class="collab-completion-note"><strong>完成说明：</strong>${note.completionNote}</div>`
+      : "";
+
     return `
-      <div class="collab-note ${typeClass} ${resolvedClass}" data-collab-id="${note.id}">
+      <div class="collab-note ${typeClass} ${resolvedClass} ${priorityClass}" data-collab-id="${note.id}">
         <div class="collab-note-header">
           <div class="collab-note-tags">
             <span class="collab-tag type-${note.type}">${typeLabel}</span>
             <span class="collab-tag ${targetClass}">${targetLabel}</span>
             <span class="collab-tag ${statusClass}">${statusLabel}</span>
+            <span class="collab-tag priority-tag">${priorityIcon} ${priorityLabel}</span>
+            <span class="collab-tag assignee-tag">👤 ${assigneeLabel}</span>
+            ${practiceGoalText}
           </div>
           <div class="collab-note-actions">
+            <button type="button" class="collab-action-btn edit-btn" data-collab-edit="${note.id}" title="编辑任务">✎</button>
             ${resolveBtn}
             <button type="button" class="collab-action-btn delete-btn" data-collab-delete="${note.id}" title="删除">✕</button>
           </div>
         </div>
         <div class="collab-note-content">${note.content}</div>
+        ${completionNoteText}
         <div class="collab-note-footer">
           <span class="collab-note-time">${formatCollabTime(note.createdAt)}</span>
           ${note.updatedAt !== note.createdAt ? `<span class="collab-note-time">更新于 ${formatCollabTime(note.updatedAt)}</span>` : ""}
@@ -4040,23 +4165,27 @@ if (practiceListBody) {
   });
 }
 
+function addCollabNoteFromInput() {
+  if (!collabNoteInput || !collabNoteInput.value.trim()) return;
+  const type = getCurrentCollabType();
+  const target = collabTargetSelect ? collabTargetSelect.value : "all";
+  const assignee = collabAssigneeSelect ? collabAssigneeSelect.value : (type === "teacher" ? "teacher1" : "student1");
+  const priority = collabPrioritySelect ? collabPrioritySelect.value : PRIORITY_LEVELS.MEDIUM;
+  const practiceGoal = collabPracticeGoal ? parseInt(collabPracticeGoal.value) || 0 : 0;
+  createCollabNote(collabNoteInput.value, type, target, assignee, priority, practiceGoal);
+  collabNoteInput.value = "";
+  if (collabPracticeGoal) collabPracticeGoal.value = "0";
+}
+
 if (collabAddBtn) {
-  collabAddBtn.addEventListener("click", () => {
-    if (!collabNoteInput || !collabNoteInput.value.trim()) return;
-    const type = getCurrentCollabType();
-    const target = collabTargetSelect ? collabTargetSelect.value : "all";
-    createCollabNote(collabNoteInput.value, type, target);
-    collabNoteInput.value = "";
-  });
+  collabAddBtn.addEventListener("click", addCollabNoteFromInput);
 }
 
 if (collabNoteInput) {
   collabNoteInput.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || !collabNoteInput.value.trim()) return;
-    const type = getCurrentCollabType();
-    const target = collabTargetSelect ? collabTargetSelect.value : "all";
-    createCollabNote(collabNoteInput.value, type, target);
-    collabNoteInput.value = "";
+    event.preventDefault();
+    addCollabNoteFromInput();
   });
 }
 
@@ -4093,6 +4222,30 @@ if (filterStatusBtns) {
   });
 }
 
+if (filterAssigneeBtns) {
+  filterAssigneeBtns.forEach(btn => {
+    btn.addEventListener("click", () => {
+      const assignee = btn.dataset.filterAssignee;
+      collabFilters.assignee = assignee;
+      filterAssigneeBtns.forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderCollabNotes();
+    });
+  });
+}
+
+if (filterPriorityBtns) {
+  filterPriorityBtns.forEach(btn => {
+    btn.addEventListener("click", () => {
+      const priority = btn.dataset.filterPriority;
+      collabFilters.priority = priority;
+      filterPriorityBtns.forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderCollabNotes();
+    });
+  });
+}
+
 if (sortBtns) {
   sortBtns.forEach(btn => {
     btn.addEventListener("click", () => {
@@ -4105,21 +4258,139 @@ if (sortBtns) {
   });
 }
 
+function showTaskEditModal(noteId) {
+  const section = getCurrentSection();
+  if (!section) return;
+  const note = section.collabNotes.find(n => n.id === noteId);
+  if (!note) return;
+
+  const assigneeOptions = ASSIGNEES.map(a => 
+    `<option value="${a.value}" ${note.assignee === a.value ? "selected" : ""}>${a.label}</option>`
+  ).join("");
+
+  const priorityOptions = Object.entries(PRIORITY_LABELS).map(([value, label]) => 
+    `<option value="${value}" ${note.priority === value ? "selected" : ""}>${PRIORITY_ICONS[value]} ${label}</option>`
+  ).join("");
+
+  const modalHtml = `
+    <div class="task-edit-overlay" id="taskEditOverlay">
+      <div class="task-edit-modal">
+        <div class="task-edit-header">
+          <h3>✎ 编辑任务</h3>
+          <button type="button" class="task-edit-close" id="taskEditClose">✕</button>
+        </div>
+        <div class="task-edit-body">
+          <div class="task-edit-field">
+            <label>任务内容</label>
+            <textarea id="taskEditContent" rows="3">${note.content}</textarea>
+          </div>
+          <div class="task-edit-row">
+            <div class="task-edit-field">
+              <label>类型</label>
+              <select id="taskEditType">
+                <option value="teacher" ${note.type === "teacher" ? "selected" : ""}>👨‍🏫 老师批注</option>
+                <option value="student" ${note.type === "student" ? "selected" : ""}>👨‍🎓 学生反馈</option>
+              </select>
+            </div>
+            <div class="task-edit-field">
+              <label>目标小节</label>
+              <select id="taskEditTarget">
+                <option value="all" ${note.target === "all" ? "selected" : ""}>全段</option>
+                <option value="0" ${note.target === 0 ? "selected" : ""}>第1小节</option>
+                <option value="1" ${note.target === 1 ? "selected" : ""}>第2小节</option>
+                <option value="2" ${note.target === 2 ? "selected" : ""}>第3小节</option>
+                <option value="3" ${note.target === 3 ? "selected" : ""}>第4小节</option>
+              </select>
+            </div>
+          </div>
+          <div class="task-edit-row">
+            <div class="task-edit-field">
+              <label>负责人</label>
+              <select id="taskEditAssignee">${assigneeOptions}</select>
+            </div>
+            <div class="task-edit-field">
+              <label>优先级</label>
+              <select id="taskEditPriority">${priorityOptions}</select>
+            </div>
+            <div class="task-edit-field">
+              <label>练习目标（次）</label>
+              <input type="number" id="taskEditPracticeGoal" min="0" max="100" value="${note.practiceGoal || 0}">
+            </div>
+          </div>
+          <div class="task-edit-field">
+            <label>完成说明</label>
+            <textarea id="taskEditCompletionNote" rows="2" placeholder="标记完成时填写的说明...">${note.completionNote || ""}</textarea>
+          </div>
+        </div>
+        <div class="task-edit-footer">
+          <button type="button" class="task-edit-cancel" id="taskEditCancel">取消</button>
+          <button type="button" class="task-edit-save" id="taskEditSave">✓ 保存修改</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.insertAdjacentHTML("beforeend", modalHtml);
+
+  const overlay = document.querySelector("#taskEditOverlay");
+  const closeBtn = document.querySelector("#taskEditClose");
+  const cancelBtn = document.querySelector("#taskEditCancel");
+  const saveBtn = document.querySelector("#taskEditSave");
+
+  const closeModal = () => overlay.remove();
+
+  closeBtn.addEventListener("click", closeModal);
+  cancelBtn.addEventListener("click", closeModal);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeModal();
+  });
+
+  saveBtn.addEventListener("click", () => {
+    const content = document.querySelector("#taskEditContent").value.trim();
+    if (!content) {
+      alert("任务内容不能为空");
+      return;
+    }
+    const updates = {
+      content,
+      type: document.querySelector("#taskEditType").value,
+      target: document.querySelector("#taskEditTarget").value === "all" ? "all" : Number(document.querySelector("#taskEditTarget").value),
+      assignee: document.querySelector("#taskEditAssignee").value,
+      priority: document.querySelector("#taskEditPriority").value,
+      practiceGoal: parseInt(document.querySelector("#taskEditPracticeGoal").value) || 0,
+      completionNote: document.querySelector("#taskEditCompletionNote").value.trim()
+    };
+    updateCollabNote(noteId, updates);
+    closeModal();
+  });
+}
+
+function promptCompletionNote(noteId) {
+  const completionNote = prompt("请填写完成说明（可选）：", "");
+  if (completionNote !== null) {
+    updateCollabNote(noteId, { resolved: true, completionNote: completionNote.trim() });
+  }
+}
+
 if (collabNotesList) {
   collabNotesList.addEventListener("click", (event) => {
     const resolveBtn = event.target.closest("[data-collab-resolve]");
     const unresolveBtn = event.target.closest("[data-collab-unresolve]");
     const deleteBtn = event.target.closest("[data-collab-delete]");
+    const editBtn = event.target.closest("[data-collab-edit]");
 
     if (resolveBtn) {
       const noteId = resolveBtn.dataset.collabResolve;
-      toggleCollabNoteResolved(noteId);
+      promptCompletionNote(noteId);
     } else if (unresolveBtn) {
       const noteId = unresolveBtn.dataset.collabUnresolve;
-      toggleCollabNoteResolved(noteId);
+      updateCollabNote(noteId, { resolved: false });
     } else if (deleteBtn) {
       const noteId = deleteBtn.dataset.collabDelete;
       deleteCollabNote(noteId);
+    } else if (editBtn) {
+      const noteId = editBtn.dataset.collabEdit;
+      showTaskEditModal(noteId);
     }
   });
 }

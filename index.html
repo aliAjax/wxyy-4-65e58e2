@@ -418,7 +418,7 @@
 
         <div class="collab-notes">
           <div class="collab-notes-header">
-            <h2>👥 师生协作批注板</h2>
+            <h2>📋 批注任务流</h2>
           </div>
 
           <div class="collab-notes-input">
@@ -433,7 +433,9 @@
                   <span>👨‍🎓 学生反馈</span>
                 </label>
               </div>
-              <div class="collab-target-selector">
+            </div>
+            <div class="collab-input-row">
+              <div class="collab-field">
                 <label>目标：</label>
                 <select id="collabTargetSelect">
                   <option value="all">全段</option>
@@ -443,10 +445,33 @@
                   <option value="3">第4小节</option>
                 </select>
               </div>
+              <div class="collab-field">
+                <label>负责人：</label>
+                <select id="collabAssigneeSelect">
+                  <option value="teacher1">张老师</option>
+                  <option value="teacher2">李老师</option>
+                  <option value="student1">学生甲</option>
+                  <option value="student2">学生乙</option>
+                  <option value="student3">学生丙</option>
+                  <option value="other">其他</option>
+                </select>
+              </div>
+              <div class="collab-field">
+                <label>优先级：</label>
+                <select id="collabPrioritySelect">
+                  <option value="high">🔴 高优先</option>
+                  <option value="medium" selected>🟡 中优先</option>
+                  <option value="low">🟢 低优先</option>
+                </select>
+              </div>
+              <div class="collab-field">
+                <label>练习目标：</label>
+                <input type="number" id="collabPracticeGoal" min="0" max="100" value="0" class="collab-practice-input" placeholder="次数">
+              </div>
             </div>
             <div class="collab-input-row collab-input-main">
-              <input type="text" id="collabNoteInput" placeholder="输入批注内容，按回车添加..." class="collab-input">
-              <button type="button" id="collabAddBtn" class="collab-add-btn">添加</button>
+              <input type="text" id="collabNoteInput" placeholder="输入任务内容，按回车添加..." class="collab-input">
+              <button type="button" id="collabAddBtn" class="collab-add-btn">添加任务</button>
             </div>
           </div>
 
@@ -468,9 +493,30 @@
               </div>
             </div>
             <div class="filter-group">
+              <span class="filter-label">负责人：</span>
+              <div class="filter-buttons">
+                <button type="button" class="filter-btn active" data-filter-assignee="all">全部</button>
+                <button type="button" class="filter-btn" data-filter-assignee="teacher1">张老师</button>
+                <button type="button" class="filter-btn" data-filter-assignee="teacher2">李老师</button>
+                <button type="button" class="filter-btn" data-filter-assignee="student1">学生甲</button>
+                <button type="button" class="filter-btn" data-filter-assignee="student2">学生乙</button>
+                <button type="button" class="filter-btn" data-filter-assignee="student3">学生丙</button>
+              </div>
+            </div>
+            <div class="filter-group">
+              <span class="filter-label">优先级：</span>
+              <div class="filter-buttons">
+                <button type="button" class="filter-btn active" data-filter-priority="all">全部</button>
+                <button type="button" class="filter-btn priority-high-filter" data-filter-priority="high">🔴 高</button>
+                <button type="button" class="filter-btn priority-medium-filter" data-filter-priority="medium">🟡 中</button>
+                <button type="button" class="filter-btn priority-low-filter" data-filter-priority="low">🟢 低</button>
+              </div>
+            </div>
+            <div class="filter-group">
               <span class="filter-label">排序：</span>
               <div class="filter-buttons">
                 <button type="button" class="filter-btn active" data-sort="newest">最新</button>
+                <button type="button" class="filter-btn" data-sort="priority">优先级</button>
                 <button type="button" class="filter-btn" data-sort="oldest">最早</button>
               </div>
             </div>
