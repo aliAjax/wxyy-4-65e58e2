@@ -86,6 +86,20 @@ function createDefaultSection(name = "段落 1") {
   };
 }
 
+function createEmptySection(name = "段落 1") {
+  return {
+    id: crypto.randomUUID(),
+    name,
+    bpm: 96,
+    loop: "",
+    notes: [],
+    collabNotes: [],
+    pattern: instruments.map(() => Array.from({ length: steps }, () => "")),
+    enabledInstruments: [true, true, true, true],
+    measureRange: null
+  };
+}
+
 const defaultState = {
   pieceName: "出场锣鼓-慢起",
   sections: [createDefaultSection("出场锣鼓")],
@@ -1387,7 +1401,7 @@ function parseCommand(input) {
   }
 
   return {
-    isMultiSection: sections.length > 1,
+    isMultiSection: true,
     sections
   };
 }
@@ -1632,7 +1646,7 @@ function applyParsedPattern() {
     const insertIdx = currentIdx >= 0 ? currentIdx + 1 : state.sections.length;
 
     parsedPattern.sections.forEach((parsedSection) => {
-      const newSection = createDefaultSection(parsedSection.name);
+      const newSection = createEmptySection(parsedSection.name);
       newSection.bpm = parsedSection.bpm;
       if (parsedSection.measureRange) {
         newSection.measureRange = { ...parsedSection.measureRange };
@@ -1682,7 +1696,7 @@ function applyParsedPattern() {
 
     for (let i = 1; i < parsedPattern.sections.length; i++) {
       const parsedSection = parsedPattern.sections[i];
-      const newSection = createDefaultSection(parsedSection.name);
+      const newSection = createEmptySection(parsedSection.name);
       newSection.bpm = parsedSection.bpm;
       if (parsedSection.measureRange) {
         newSection.measureRange = { ...parsedSection.measureRange };
