@@ -538,12 +538,12 @@ select {
   transition: all 0.2s;
 }
 
-.voice-card.disabled {
+.voice-card.off {
   opacity: 0.55;
   background: #f9f6f1;
 }
 
-.voice-card.active {
+.voice-card.on {
   border-color: var(--active);
   background: #f0f8f6;
 }
@@ -554,38 +554,37 @@ select {
   gap: 10px;
 }
 
-.voice-card-toggle {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  border: 2px solid var(--line);
-  background: transparent;
+.voice-main-toggle {
   cursor: pointer;
   display: flex;
   align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
   transition: all 0.2s;
-  padding: 0;
 }
 
-.voice-card.active .voice-card-toggle {
+.voice-main-toggle input {
+  display: none;
+}
+
+.voice-card.on .voice-indicator {
   background: var(--active);
   border-color: var(--active);
   box-shadow: 0 0 0 3px #d9efea;
 }
 
-.voice-card.disabled .voice-card-toggle {
+.voice-card.off .voice-indicator {
   background: #e8e1d5;
 }
 
-.voice-card-name {
+.voice-card .voice-name {
   flex: 1;
   font-weight: 700;
   font-size: 15px;
 }
 
-.voice-card-token {
+.voice-card .voice-token {
   font-size: 16px;
   font-weight: 900;
   color: var(--accent);
@@ -594,6 +593,10 @@ select {
   border-radius: 4px;
   min-width: 26px;
   text-align: center;
+}
+
+.voice-card.off .voice-token {
+  opacity: 0.4;
 }
 
 .voice-preview-btn {
@@ -628,14 +631,17 @@ select {
   gap: 10px;
 }
 
-.voice-slider-group {
+.voice-control {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
 }
 
-.voice-slider-label {
-  min-width: 40px;
+.voice-control-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   color: var(--muted);
   font-weight: 600;
@@ -679,7 +685,7 @@ select {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
 }
 
-.voice-slider-value {
+.voice-value {
   min-width: 38px;
   text-align: right;
   font-size: 12px;
@@ -688,9 +694,9 @@ select {
   font-variant-numeric: tabular-nums;
 }
 
-.voice-card-footer {
+.accent-control {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
   padding-top: 4px;
   border-top: 1px dashed var(--line);
@@ -758,17 +764,16 @@ select {
     gap: 10px;
   }
 
-  .voice-slider-label {
-    min-width: 36px;
+  .voice-control-label {
     font-size: 11px;
   }
 
-  .voice-slider-value {
+  .voice-value {
     min-width: 34px;
     font-size: 11px;
   }
 
-  .voice-card-token {
+  .voice-card .voice-token {
     font-size: 14px;
     padding: 1px 6px;
     min-width: 22px;
@@ -786,9 +791,8 @@ select {
     font-size: 12px;
   }
 
-  .voice-card-toggle {
-    width: 30px;
-    height: 30px;
+  .voice-main-toggle {
+    gap: 8px;
   }
 }
 
