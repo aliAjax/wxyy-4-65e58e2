@@ -164,7 +164,7 @@ select {
 
 .grid {
   display: grid;
-  grid-template-columns: 76px repeat(16, minmax(48px, 1fr));
+  /* grid-template-columns will be set by inline style from JS */
   min-width: 850px;
   border-top: 1px solid var(--line);
   border-left: 1px solid var(--line);
@@ -2076,7 +2076,7 @@ select {
 
 .preview-grid-inner {
   display: grid;
-  grid-template-columns: 76px repeat(16, minmax(44px, 1fr));
+  /* grid-template-columns will be set by inline style from JS */
   min-width: 800px;
   border-top: 1px solid var(--line);
   border-left: 1px solid var(--line);

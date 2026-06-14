@@ -9,6 +9,19 @@ const instruments = [
 ];
 const steps = 16;
 
+function getSectionSteps(section) {
+  if (!section) return 16;
+  const mc = section.measureCount || 4;
+  const bpm = section.beatsPerMeasure || 4;
+  return mc * bpm;
+}
+function beatLabelForSection(section, index) {
+  const bpm = section.beatsPerMeasure || 4;
+  const measure = Math.floor(index / bpm) + 1;
+  const beat = (index % bpm) + 1;
+  return `${measure}-${beat}`;
+}
+
 const collabFilters = {
   type: "all",
   status: "all",
@@ -68,13 +81,15 @@ function deepCloneSection(section) {
     name: section.name,
     bpm: section.bpm,
     loop: section.loop,
+    measureCount: section.measureCount || 4,
+    beatsPerMeasure: section.beatsPerMeasure || 4,
     notes: Array.isArray(section.notes) ? [...section.notes] : [],
     collabNotes: Array.isArray(section.collabNotes)
       ? section.collabNotes.map(n => ({ ...n }))
       : [],
     pattern: Array.isArray(section.pattern)
       ? section.pattern.map((row) => (Array.isArray(row) ? [...row] : []))
-      : instruments.map(() => Array(steps).fill("")),
+      : instruments.map(() => Array(getSectionSteps(section)).fill("")),
     enabledInstruments: Array.isArray(section.enabledInstruments)
       ? [...section.enabledInstruments]
       : [true, true, true, true],
@@ -100,6 +115,8 @@ function deepCloneSavedItem(item) {
     currentSectionId: item.currentSectionId,
     createdAt: item.createdAt,
     loop: item.loop,
+    measureCount: item.measureCount || 4,
+    beatsPerMeasure: item.beatsPerMeasure || 4,
     notes: Array.isArray(item.notes) ? [...item.notes] : [],
     pattern: Array.isArray(item.pattern)
       ? item.pattern.map((row) => (Array.isArray(row) ? [...row] : []))
@@ -117,16 +134,21 @@ function deepCloneSavedList(savedList) {
 }
 
 function createDefaultSection(name = "段落 1") {
+  const mc = 4;
+  const bpm = 4;
+  const totalSteps = mc * bpm;
   return {
     id: crypto.randomUUID(),
     name,
     bpm: 96,
     loop: "",
+    measureCount: mc,
+    beatsPerMeasure: bpm,
     notes: [],
     collabNotes: [],
     pattern: instruments.map((instrument) =>
-      Array.from({ length: steps }, (_, index) =>
-        index % 4 === 0 ? instrument.token : ""
+      Array.from({ length: totalSteps }, (_, index) =>
+        index % bpm === 0 ? instrument.token : ""
       )
     ),
     enabledInstruments: [true, true, true, true],
@@ -136,14 +158,19 @@ function createDefaultSection(name = "段落 1") {
 }
 
 function createEmptySection(name = "段落 1") {
+  const mc = 4;
+  const bpm = 4;
+  const totalSteps = mc * bpm;
   return {
     id: crypto.randomUUID(),
     name,
     bpm: 96,
     loop: "",
+    measureCount: mc,
+    beatsPerMeasure: bpm,
     notes: [],
     collabNotes: [],
-    pattern: instruments.map(() => Array.from({ length: steps }, () => "")),
+    pattern: instruments.map(() => Array.from({ length: totalSteps }, () => "")),
     enabledInstruments: [true, true, true, true],
     mixConfig: createDefaultMixConfig(),
     measureRange: null
@@ -162,14 +189,15 @@ const defaultState = {
 };
 
 function parseMeasureFromNote(content) {
-  const match = content.match(/第\s*([一二三四\d]+)\s*小节/);
+  const match = content.match(/第\s*([一二三四五六七八九十\d]+)\s*小节/);
   if (!match) return null;
   const numStr = match[1];
-  if (["一", "二", "三", "四"].includes(numStr)) {
-    return ["一", "二", "三", "四"].indexOf(numStr);
+  const cnNums = ["一","二","三","四","五","六","七","八","九","十","十一","十二","十三","十四","十五","十六"];
+  if (cnNums.includes(numStr)) {
+    return cnNums.indexOf(numStr);
   }
   const num = parseInt(numStr);
-  if (!isNaN(num) && num >= 1 && num <= 4) {
+  if (!isNaN(num) && num >= 1 && num <= 16) {
     return num - 1;
   }
   return null;
@@ -255,23 +283,37 @@ function migrateAllSectionsToCollabNotes(state) {
 
 function migrateOldFormat(oldState) {
   let result;
+  const ensureSectionDefaults = (sec) => {
+    if (!sec.measureCount) sec.measureCount = 4;
+    if (!sec.beatsPerMeasure) sec.beatsPerMeasure = 4;
+    return sec;
+  };
   if (oldState.sections && Array.isArray(oldState.sections)) {
+    const sections = deepCloneSections(oldState.sections).map(ensureSectionDefaults);
+    let saved = deepCloneSavedList(oldState.saved);
+    saved.forEach(item => {
+      if (Array.isArray(item.sections)) {
+        item.sections = item.sections.map(ensureSectionDefaults);
+      }
+    });
     result = {
       pieceName: oldState.pieceName || "出场锣鼓-慢起",
-      sections: deepCloneSections(oldState.sections),
+      sections,
       currentSectionId: oldState.currentSectionId || oldState.sections[0]?.id || null,
       continuousPlay: oldState.continuousPlay || false,
-      saved: deepCloneSavedList(oldState.saved),
+      saved,
       playCount: oldState.playCount || 0,
       lastPlayedAt: oldState.lastPlayedAt || null,
       recentPlayedSection: oldState.recentPlayedSection || ""
     };
   } else {
-    const section = {
+    const section = ensureSectionDefaults({
       id: crypto.randomUUID(),
       name: oldState.pieceName || "主段落",
       bpm: oldState.bpm || 96,
       loop: oldState.loop || "",
+      measureCount: 4,
+      beatsPerMeasure: 4,
       notes: Array.isArray(oldState.notes) ? [...oldState.notes] : [],
       collabNotes: [],
       pattern: Array.isArray(oldState.pattern)
@@ -286,13 +328,19 @@ function migrateOldFormat(oldState) {
         : [true, true, true, true],
       mixConfig: deepCloneMixConfig(oldState.mixConfig),
       measureRange: oldState.measureRange ? { ...oldState.measureRange } : null
-    };
+    });
+    let saved = deepCloneSavedList(oldState.saved);
+    saved.forEach(item => {
+      if (Array.isArray(item.sections)) {
+        item.sections = item.sections.map(ensureSectionDefaults);
+      }
+    });
     result = {
       pieceName: oldState.pieceName || "出场锣鼓-慢起",
       sections: [section],
       currentSectionId: section.id,
       continuousPlay: false,
-      saved: deepCloneSavedList(oldState.saved),
+      saved,
       playCount: oldState.playCount || 0,
       lastPlayedAt: oldState.lastPlayedAt || null,
       recentPlayedSection: oldState.recentPlayedSection || ""
@@ -304,6 +352,17 @@ function migrateOldFormat(oldState) {
 
 function migrateRehearsalEntry(entry) {
   if (!entry || typeof entry !== "object") return null;
+  const tempSections = entry.snapshot && Array.isArray(entry.snapshot.sections)
+    ? deepCloneSections(entry.snapshot.sections)
+    : null;
+  const findSection = () => {
+    if (!tempSections) return null;
+    const sid = entry.sectionId || entry.snapshot?.currentSectionId;
+    if (sid) return tempSections.find(s => s.id === sid) || tempSections[0] || null;
+    return tempSections[0] || null;
+  };
+  const matchedSection = findSection();
+  const defaultBpm = matchedSection?.beatsPerMeasure || 4;
   const result = {
     id: entry.id || crypto.randomUUID(),
     timestamp: entry.timestamp || new Date().toISOString(),
@@ -324,13 +383,13 @@ function migrateRehearsalEntry(entry) {
           .map((i) => i.name),
     pausePosition: entry.pausePosition ?? null,
     pauseLabel: entry.pauseLabel || (entry.pausePosition != null
-      ? `第${Math.floor(entry.pausePosition / 4) + 1}小节第${(entry.pausePosition % 4) + 1}拍`
+      ? (matchedSection
+          ? beatLabelForSection(matchedSection, entry.pausePosition)
+          : `第${Math.floor(entry.pausePosition / defaultBpm) + 1}小节第${(entry.pausePosition % defaultBpm) + 1}拍`)
       : "播放完成"),
     durationMs: typeof entry.durationMs === "number" ? entry.durationMs : null,
     snapshot: entry.snapshot ? {
-      sections: Array.isArray(entry.snapshot.sections)
-        ? deepCloneSections(entry.snapshot.sections)
-        : null,
+      sections: tempSections,
       currentSectionId: entry.snapshot.currentSectionId || null,
       pieceName: entry.snapshot.pieceName || "",
       continuousPlay: entry.snapshot.continuousPlay ?? false
@@ -547,8 +606,8 @@ const tempoBeatsValue = document.querySelector("#tempoBeatsValue");
 const tempoProgressFill = document.querySelector("#tempoProgressFill");
 const tempoProgressText = document.querySelector("#tempoProgressText");
 
-const SCHEMA_VERSION = 4;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4];
+const SCHEMA_VERSION = 5;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5];
 
 let parsedPattern = null;
 let editingSectionId = null;
@@ -573,24 +632,102 @@ function syncFields() {
   bpmInput.value = section.bpm;
   loopSelect.value = section.loop;
   continuousPlayCheckbox.checked = state.continuousPlay;
+  renderLoopSelect();
+  renderCollabTargetSelect();
 }
 
-function beatLabel(index) {
-  const measure = Math.floor(index / 4) + 1;
-  const beat = (index % 4) + 1;
+function beatLabel(index, section) {
+  const sec = section || getCurrentSection();
+  const bpm = sec?.beatsPerMeasure || 4;
+  const measure = Math.floor(index / bpm) + 1;
+  const beat = (index % bpm) + 1;
   return `${measure}-${beat}`;
 }
+
+function renderLoopSelect() {
+  const section = getCurrentSection();
+  if (!section || !loopSelect) return;
+  const mc = section.measureCount || 4;
+  const currentVal = loopSelect.value;
+  let html = '<option value="">全段</option>';
+  for (let i = 0; i < mc; i++) {
+    html += `<option value="${i}">第${i+1}小节</option>`;
+  }
+  loopSelect.innerHTML = html;
+  loopSelect.value = (currentVal !== "" && Number(currentVal) < mc) ? currentVal : (section.loop || "");
+}
+function renderCollabTargetSelect() {
+  const section = getCurrentSection();
+  if (!section || !collabTargetSelect) return;
+  const mc = section.measureCount || 4;
+  const currentVal = collabTargetSelect.value;
+  let html = '<option value="all">全段</option>';
+  for (let i = 0; i < mc; i++) {
+    html += `<option value="${i}">第${i+1}小节</option>`;
+  }
+  collabTargetSelect.innerHTML = html;
+  if (currentVal === "all" || (Number(currentVal) >= 0 && Number(currentVal) < mc)) {
+    collabTargetSelect.value = currentVal;
+  } else {
+    collabTargetSelect.value = "all";
+  }
+}
+function resizeSectionPattern(section, newMc, newBpm) {
+  newMc = Math.max(1, Math.min(16, parseInt(newMc) || 4));
+  newBpm = Math.max(2, Math.min(7, parseInt(newBpm) || 4));
+  const oldMc = section.measureCount || 4;
+  const oldBpm = section.beatsPerMeasure || 4;
+  if (newMc === oldMc && newBpm === oldBpm) return;
+  const oldSteps = oldMc * oldBpm;
+  const newSteps = newMc * newBpm;
+  const newPattern = instruments.map((inst, row) => {
+    const newRow = Array.from({length: newSteps}, (_, i) => "");
+    for (let oldIdx = 0; oldIdx < oldSteps && oldIdx < newSteps; oldIdx++) {
+      const oldMeasure = Math.floor(oldIdx / oldBpm);
+      const oldBeat = oldIdx % oldBpm;
+      if (oldMeasure < newMc && oldBeat < newBpm) {
+        const newIdx = oldMeasure * newBpm + oldBeat;
+        if (newIdx < newSteps && oldIdx < section.pattern[row].length) {
+          newRow[newIdx] = section.pattern[row][oldIdx] || "";
+        }
+      }
+    }
+    return newRow;
+  });
+  section.pattern = newPattern;
+  section.measureCount = newMc;
+  section.beatsPerMeasure = newBpm;
+  if (section.loop !== "") {
+    const loopNum = Number(section.loop);
+    if (isNaN(loopNum) || loopNum >= newMc) {
+      section.loop = "";
+    }
+  }
+  if (Array.isArray(section.collabNotes)) {
+    section.collabNotes.forEach(n => {
+      if (n.target !== "all" && Number(n.target) >= newMc) {
+        n.target = "all";
+      }
+    });
+  }
+  save();
+}
+
+let editingMeasureSectionId = null;
 
 function renderSectionsList() {
   sectionsList.innerHTML = state.sections
     .map((section, index) => {
       const isActive = section.id === state.currentSectionId;
       const isEditing = editingSectionId === section.id;
+      const isMeasureEditing = editingMeasureSectionId === section.id;
       const noteCount = section.notes.length;
       const filledCount = section.pattern.flat().filter(Boolean).length;
       const rangeText = section.measureRange
         ? `${section.measureRange.start}-${section.measureRange.end}小节`
         : "";
+      const mc = section.measureCount || 4;
+      const bpm = section.beatsPerMeasure || 4;
       return `
         <div class="section-item ${isActive ? "active" : ""}" data-section-id="${section.id}">
           <span class="section-order">${index + 1}</span>
@@ -598,7 +735,18 @@ function renderSectionsList() {
             ${isEditing
               ? `<input type="text" class="section-name-input" value="${section.name}" data-section-rename="${section.id}" autofocus>`
               : `<div class="section-name">${section.name}</div>
-                 <div class="section-meta">${section.bpm}BPM${rangeText ? ` · ${rangeText}` : ""} · ${noteCount}条批注 · ${filledCount}个口令</div>`
+                 <div class="section-meta">
+                   ${section.bpm}BPM${rangeText ? ` · ${rangeText}` : ""} · ${noteCount}条批注 · ${filledCount}个口令
+                   ${isMeasureEditing
+                     ? ` · <span class="measure-edit">
+                         <input type="number" min="1" max="16" value="${mc}" class="measure-count-input" data-mc-section="${section.id}" style="width:48px;">小节
+                         <input type="number" min="2" max="7" value="${bpm}" class="beats-input" data-bpm-section="${section.id}" style="width:48px;">/4拍
+                         <button type="button" class="measure-save-btn" data-save-measure="${section.id}">保存</button>
+                         <button type="button" class="measure-cancel-btn" data-cancel-measure="${section.id}">取消</button>
+                       </span>`
+                     : ` · <span class="measure-display" style="cursor:pointer;color:#2563eb;" data-toggle-measure="${section.id}">${mc}小节·${bpm}/4拍</span>`
+                   }
+                 </div>`
             }
           </div>
           <div class="section-item-btns">
@@ -623,6 +771,10 @@ function renderSectionsList() {
 function renderGrid() {
   const section = getCurrentSection();
   if (!section) return;
+  const totalSteps = getSectionSteps(section);
+  const bpm = section.beatsPerMeasure || 4;
+
+  grid.style.gridTemplateColumns = `76px repeat(${totalSteps}, minmax(48px, 1fr))`;
 
   const hiddenStepMap = {};
   const answeredStepMap = {};
@@ -638,11 +790,11 @@ function renderGrid() {
   const measureNoteTypes = getMeasureNoteTypes();
 
   const header = ['<div class="label-cell">乐器</div>'];
-  for (let i = 0; i < steps; i += 1) {
+  for (let i = 0; i < totalSteps; i += 1) {
     const question = hiddenStepMap[i];
     const answered = answeredStepMap[i];
     const isRestHidden = question && question.rows.length === 0;
-    const measure = Math.floor(i / 4);
+    const measure = Math.floor(i / bpm);
     const noteTypes = measureNoteTypes[measure];
     let noteClass = "";
     if (noteTypes && noteTypes.types && noteTypes.types.size > 0) {
@@ -659,13 +811,13 @@ function renderGrid() {
     }
 
     let beatClass = "beat-cell" + noteClass;
-    let beatContent = beatLabel(i);
+    let beatContent = beatLabelForSection(section, i);
 
     if (isRestHidden) {
       beatClass += " hidden-cell hidden-rest";
       if (answered) {
         beatClass += answered.correct ? " answered-correct" : " answered-wrong";
-        beatContent = beatLabel(i);
+        beatContent = beatLabelForSection(section, i);
         if (!answered.correct) {
           beatContent += `<span class="correct-answer">休止</span>`;
         }
@@ -678,12 +830,12 @@ function renderGrid() {
   const rows = instruments.flatMap((instrument, rowIndex) => {
     const muted = !section.enabledInstruments[rowIndex];
     const row = [`<div class="label-cell ${muted ? "muted" : ""}">${instrument.name}</div>`];
-    for (let step = 0; step < steps; step += 1) {
-      const value = section.pattern[rowIndex][step];
+    for (let step = 0; step < totalSteps; step += 1) {
+      const value = section.pattern[rowIndex] ? (section.pattern[rowIndex][step] || "") : "";
       const question = hiddenStepMap[step];
       const isInstrumentHidden = question && question.rows.length > 0 && question.rows.includes(rowIndex);
       const answered = answeredStepMap[step];
-      const measure = Math.floor(step / 4);
+      const measure = Math.floor(step / bpm);
       const noteTypes = measureNoteTypes[measure];
       let noteClass = "";
       if (noteTypes && noteTypes.types && noteTypes.types.size > 0 && !diagnosisMode) {
@@ -838,10 +990,11 @@ function getCollabNotesStats() {
 function getMeasureNoteTypes() {
   const section = getCurrentSection();
   if (!section || !Array.isArray(section.collabNotes)) return {};
+  const mc = section.measureCount || 4;
   const measureTypes = {};
   section.collabNotes.forEach(note => {
     if (note.target === "all") {
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < mc; i++) {
         if (!measureTypes[i]) measureTypes[i] = { types: new Set(), hasHighPriority: false };
         measureTypes[i].types.add(note.type);
         if (!note.resolved && note.priority === PRIORITY_LEVELS.HIGH) {
@@ -1032,10 +1185,12 @@ function renderVoicePanel() {
 function renderSidebars() {
   const section = getCurrentSection();
   if (!section) return;
+  const mc = section.measureCount || 4;
+  const bpm = section.beatsPerMeasure || 4;
 
-  const filledByMeasure = [0, 1, 2, 3].map((measure) => {
-    const start = measure * 4;
-    const count = section.pattern.flatMap((row) => row.slice(start, start + 4)).filter(Boolean).length;
+  const filledByMeasure = Array.from({length: mc}, (_, i) => i).map((measure) => {
+    const start = measure * bpm;
+    const count = section.pattern.flatMap((row) => row.slice(start, start + bpm)).filter(Boolean).length;
     return { measure: measure + 1, count };
   });
   structure.innerHTML = filledByMeasure.map((item) => `
@@ -1070,17 +1225,23 @@ function renderSidebars() {
 function getMeasureData() {
   const section = getCurrentSection();
   if (!section) return [];
+  const mc = section.measureCount || 4;
+  const bpm = section.beatsPerMeasure || 4;
+  const cnNums = ["一","二","三","四","五","六","七","八","九","十","十一","十二","十三","十四","十五","十六"];
 
-  return [0, 1, 2, 3].map((measure) => {
-    const start = measure * 4;
-    const cells = section.pattern.flatMap((row) => row.slice(start, start + 4));
+  return Array.from({length: mc}, (_, i) => i).map((measure) => {
+    const start = measure * bpm;
+    const cells = section.pattern.flatMap((row) => row.slice(start, start + bpm));
     const filled = cells.filter(Boolean).length;
     const total = cells.length;
-    const oldNotesForMeasure = section.notes.filter((n) =>
-      /第\s*([一二三四\d]+)\s*小节/.test(n) &&
-      (parseInt(RegExp.$1) === measure + 1 ||
-       ["一", "二", "三", "四"][measure] === RegExp.$1)
-    );
+    const oldNotesForMeasure = section.notes.filter((n) => {
+      const m = n.match(/第\s*([一二三四五六七八九十\d]+)\s*小节/);
+      if (!m) return false;
+      let parsedNum;
+      if (cnNums.includes(m[1])) parsedNum = cnNums.indexOf(m[1]) + 1;
+      else parsedNum = parseInt(m[1]);
+      return parsedNum === measure + 1;
+    });
     const collabNotesForMeasure = Array.isArray(section.collabNotes)
       ? section.collabNotes.filter(n =>
           !n.resolved && (n.target === "all" || n.target === measure)
@@ -1088,7 +1249,7 @@ function getMeasureData() {
       : [];
     const allNotesForMeasure = [...oldNotesForMeasure, ...collabNotesForMeasure];
     const instrumentCoverage = section.pattern.filter((row, idx) =>
-      section.enabledInstruments[idx] && row.slice(start, start + 4).some(Boolean)
+      section.enabledInstruments[idx] && row.slice(start, start + bpm).some(Boolean)
     ).length;
     return {
       measure: measure + 1,
@@ -1254,7 +1415,7 @@ function renderDashboard() {
   const now = new Date();
   dashboardTime.textContent = `${now.toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" })} ${now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
 
-  const totalCells = instruments.length * steps;
+  const totalCells = instruments.length * getSectionSteps(section);
   const filledCells = section.pattern.flat().filter(Boolean).length;
   const percent = totalCells ? Math.round((filledCells / totalCells) * 100) : 0;
   completionBar.style.width = `${percent}%`;
@@ -1360,7 +1521,22 @@ function renderRehearsalTimeline() {
       .filter((_, idx2) => entry.enabledInstruments?.[idx2])
       .map((i) => i.name);
     const voiceStr = voiceNames.length === instruments.length ? "全部声部" : voiceNames.join("、");
-    const pauseStr = entry.pauseLabel || (entry.pausePosition != null ? `第${Math.floor(entry.pausePosition / 4) + 1}小节第${(entry.pausePosition % 4) + 1}拍` : "播放完成");
+    let pauseStr = entry.pauseLabel;
+    if (!pauseStr && entry.pausePosition != null) {
+      let matchedSec = null;
+      if (entry.snapshot?.sections?.length > 0) {
+        const sid = entry.sectionId || entry.snapshot.currentSectionId;
+        matchedSec = sid ? entry.snapshot.sections.find(s => s.id === sid) : entry.snapshot.sections[0];
+        if (!matchedSec) matchedSec = entry.snapshot.sections[0];
+      }
+      if (matchedSec) {
+        pauseStr = beatLabelForSection(matchedSec, entry.pausePosition);
+        pauseStr = `第${Math.floor(entry.pausePosition / (matchedSec.beatsPerMeasure || 4)) + 1}小节第${(entry.pausePosition % (matchedSec.beatsPerMeasure || 4)) + 1}拍`;
+      } else {
+        pauseStr = `第${Math.floor(entry.pausePosition / 4) + 1}小节第${(entry.pausePosition % 4) + 1}拍`;
+      }
+    }
+    pauseStr = pauseStr || "播放完成";
     const isPlaying = entry.id === currentRehearsalId;
     const durationStr = formatDuration(entry.durationMs);
     const canRestore = entry.snapshot && entry.snapshot.sections && entry.snapshot.sections.length > 0;
@@ -1436,21 +1612,25 @@ const aliasLabels = {
   3: ["台", "令", "另", "当", "来"]
 };
 
-function parseSinglePattern(input) {
+function parseSinglePattern(input, section) {
   const trimmed = input.trim();
   if (!trimmed) {
     return null;
   }
 
+  const mc = section?.measureCount || 16;
+  const bpm = section?.beatsPerMeasure || 4;
+  const totalSteps = section ? getSectionSteps(section) : (mc * bpm);
+
   const measureStrs = trimmed.split(/\|\|/).map(s => s.trim()).filter(Boolean);
   if (measureStrs.length === 0) {
     return null;
   }
-  if (measureStrs.length > 4) {
-    throw new Error(`最多支持 4 小节，当前输入了 ${measureStrs.length} 小节。`);
+  if (measureStrs.length > mc) {
+    throw new Error(`最多支持 ${mc} 小节，当前输入了 ${measureStrs.length} 小节。`);
   }
 
-  const pattern = instruments.map(() => Array(steps).fill(""));
+  const pattern = instruments.map(() => Array(totalSteps).fill(""));
   const warnings = [];
   const aliasConversions = [];
 
@@ -1458,20 +1638,20 @@ function parseSinglePattern(input) {
     const measureStr = measureStrs[measureIdx];
     const beatStrs = measureStr.split(/[|\s]+/).map(s => s.trim()).filter(s => s !== "");
 
-    if (beatStrs.length !== 4) {
+    if (beatStrs.length !== bpm) {
       throw new Error(
         `第 ${measureIdx + 1} 小节拍数错误：<span class="error-location">${measureStr}</span><br>` +
-        `期望 <strong>4 拍</strong>，实际有 <strong>${beatStrs.length} 拍</strong>。<br>` +
+        `期望 <strong>${bpm} 拍</strong>，实际有 <strong>${beatStrs.length} 拍</strong>。<br>` +
         `请使用空格或单竖线 <code>|</code> 分隔每一拍。`
       );
     }
 
     for (let beatIdx = 0; beatIdx < beatStrs.length; beatIdx++) {
       const beatStr = beatStrs[beatIdx];
-      const stepIdx = measureIdx * 4 + beatIdx;
+      const stepIdx = measureIdx * bpm + beatIdx;
 
-      if (stepIdx >= steps) {
-        throw new Error(`超出最大拍数限制（${steps} 拍）。`);
+      if (stepIdx >= totalSteps) {
+        throw new Error(`超出最大拍数限制（${totalSteps} 拍）。`);
       }
 
       if (restTokens.has(beatStr)) {
@@ -1524,14 +1704,24 @@ function parseSectionHeader(line) {
   let name = headerContent;
   let bpm = 96;
   let measureRange = null;
+  let beatsPerMeasure = 4;
 
-  const bpmMatch = headerContent.match(/[@:：]\s*(\d{2,3})\s*(?:BPM|bpm)?/i) ||
-                   headerContent.match(/(\d{2,3})\s*(?:BPM|bpm)/i);
+  const timeSigMatch = headerContent.match(/(\d)\s*\/\s*4/);
+  if (timeSigMatch) {
+    const parsedBpm = parseInt(timeSigMatch[1]);
+    if (parsedBpm >= 2 && parsedBpm <= 7) {
+      beatsPerMeasure = parsedBpm;
+      name = headerContent.replace(timeSigMatch[0], "").trim().replace(/[\s]+$/, "").trim();
+    }
+  }
+
+  const bpmMatch = name.match(/[@:：]\s*(\d{2,3})\s*(?:BPM|bpm)?/i) ||
+                   name.match(/(\d{2,3})\s*(?:BPM|bpm)/i);
   if (bpmMatch) {
     bpm = parseInt(bpmMatch[1]);
     if (bpm < 40) bpm = 40;
     if (bpm > 220) bpm = 220;
-    name = headerContent.replace(bpmMatch[0], "").trim().replace(/[@:：，,\s]+$/, "").trim();
+    name = name.replace(bpmMatch[0], "").trim().replace(/[@:：，,\s]+$/, "").trim();
   }
 
   const rangeMatch = name.match(/[([【〔]?\s*(?:小节\s*)?(\d+)\s*[-–—~～]\s*(?:小节\s*)?(\d+)\s*(?:小节)?\s*[)\]】〕]?/);
@@ -1548,7 +1738,7 @@ function parseSectionHeader(line) {
     name = "未命名段落";
   }
 
-  return { name, bpm, measureRange };
+  return { name, bpm, measureRange, beatsPerMeasure };
 }
 
 function computeMeasureRangeLabel(measureRange, measureCount) {
@@ -1574,7 +1764,8 @@ function parseCommand(input) {
   });
 
   if (sectionHeaders.length === 0) {
-    const result = parseSinglePattern(trimmed);
+    const curSec = getCurrentSection();
+    const result = parseSinglePattern(trimmed, curSec);
     if (!result) {
       throw new Error("未找到有效的小节内容，请检查分隔符是否正确。");
     }
@@ -1582,8 +1773,10 @@ function parseCommand(input) {
       isMultiSection: false,
       sections: [{
         name: "当前段落",
-        bpm: getCurrentSection()?.bpm || 96,
+        bpm: curSec?.bpm || 96,
         measureRange: null,
+        measureCount: result.measureCount,
+        beatsPerMeasure: curSec?.beatsPerMeasure || 4,
         ...result
       }]
     };
@@ -1602,7 +1795,8 @@ function parseCommand(input) {
     if (!content) continue;
 
     try {
-      const parsed = parseSinglePattern(content);
+      const tempSec = { measureCount: 16, beatsPerMeasure: header.beatsPerMeasure || 4 };
+      const parsed = parseSinglePattern(content, tempSec);
       if (parsed) {
         let measureRange = header.measureRange;
         if (!measureRange) {
@@ -1615,6 +1809,8 @@ function parseCommand(input) {
           name: header.name,
           bpm: header.bpm,
           measureRange,
+          measureCount: parsed.measureCount,
+          beatsPerMeasure: header.beatsPerMeasure || 4,
           ...parsed
         });
         autoMeasureOffset += parsed.measureCount;
@@ -1647,7 +1843,11 @@ function hideError() {
 
 function renderSingleSectionPreviewGrid(parsedSection, existingSection, sectionIndex, globalMeasureStart) {
   const { pattern, warnings, measureCount, aliasConversions, measureRange } = parsedSection;
+  const bpm = parsedSection.beatsPerMeasure || (existingSection?.beatsPerMeasure) || 4;
+  const tempSec = { measureCount: measureCount || 4, beatsPerMeasure: bpm };
+  const totalSteps = pattern[0]?.length || getSectionSteps(tempSec);
   const totalFilled = pattern.flat().filter(Boolean).length;
+  const existSteps = existingSection ? getSectionSteps(existingSection) : 0;
 
   let sectionInfo = `<div class="preview-section-info">`;
   if (sectionIndex != null) {
@@ -1657,19 +1857,20 @@ function renderSingleSectionPreviewGrid(parsedSection, existingSection, sectionI
   const rangeLabel = measureRange
     ? `${measureRange.start}-${measureRange.end}小节`
     : (globalMeasureStart != null
-        ? `${globalMeasureStart + 1}-${globalMeasureStart + measureCount}小节`
-        : `${measureCount}小节`);
+        ? `${globalMeasureStart + 1}-${globalMeasureStart + (measureCount || 4)}小节`
+        : `${measureCount || 4}小节`);
   sectionInfo += `<span class="section-range-badge">${rangeLabel}</span>`;
 
-  sectionInfo += `<strong>${parsedSection.name}</strong> · <span class="preview-bpm-badge">${parsedSection.bpm} BPM</span> · ${totalFilled} 个口令`;
+  sectionInfo += `<strong>${parsedSection.name}</strong> · <span class="preview-bpm-badge">${parsedSection.bpm} BPM</span> · ${bpm}/4拍 · ${totalFilled} 个口令`;
 
   let willFillCount = 0;
   let willSkipCount = 0;
   if (existingSection) {
+    const compareSteps = Math.min(totalSteps, existSteps);
     for (let r = 0; r < instruments.length; r++) {
-      for (let c = 0; c < steps; c++) {
-        if (pattern[r][c]) {
-          if (existingSection.pattern[r][c]) {
+      for (let c = 0; c < compareSteps; c++) {
+        if (pattern[r] && pattern[r][c]) {
+          if (existingSection.pattern[r] && existingSection.pattern[r][c]) {
             willSkipCount++;
           } else {
             willFillCount++;
@@ -1697,17 +1898,17 @@ function renderSingleSectionPreviewGrid(parsedSection, existingSection, sectionI
   }
 
   const header = ['<div class="preview-label-cell">乐器</div>'];
-  for (let i = 0; i < steps; i += 1) {
-    const measureDivider = (i + 1) % 4 === 0 && i < steps - 1 ? " preview-measure-divider" : "";
-    header.push(`<div class="preview-beat-cell${measureDivider}">${beatLabel(i)}</div>`);
+  for (let i = 0; i < totalSteps; i += 1) {
+    const measureDivider = (i + 1) % bpm === 0 && i < totalSteps - 1 ? " preview-measure-divider" : "";
+    header.push(`<div class="preview-beat-cell${measureDivider}">${beatLabelForSection(tempSec, i)}</div>`);
   }
 
   const rows = instruments.flatMap((instrument, rowIndex) => {
     const row = [`<div class="preview-label-cell">${instrument.name}</div>`];
-    for (let step = 0; step < steps; step += 1) {
-      const parsedValue = pattern[rowIndex][step];
-      const existingValue = existingSection ? existingSection.pattern[rowIndex][step] : "";
-      const measureDivider = (step + 1) % 4 === 0 && step < steps - 1 ? " preview-measure-divider" : "";
+    for (let step = 0; step < totalSteps; step += 1) {
+      const parsedValue = pattern[rowIndex] ? (pattern[rowIndex][step] || "") : "";
+      const existingValue = (existingSection && existingSection.pattern[rowIndex] && step < existSteps) ? (existingSection.pattern[rowIndex][step] || "") : "";
+      const measureDivider = (step + 1) % bpm === 0 && step < totalSteps - 1 ? " preview-measure-divider" : "";
 
       let cellClass = "preview-cell" + measureDivider;
       let displayValue = "";
@@ -1728,11 +1929,13 @@ function renderSingleSectionPreviewGrid(parsedSection, existingSection, sectionI
     return row;
   });
 
+  const gridStyle = `style="grid-template-columns: 76px repeat(${totalSteps}, minmax(44px, 1fr));"`;
+
   return `
     <div class="preview-section-block">
       ${sectionInfo}
       <div class="preview-grid">
-        <div class="preview-grid-inner">${[...header, ...rows].join("")}</div>
+        <div class="preview-grid-inner" ${gridStyle}>${[...header, ...rows].join("")}</div>
       </div>
     </div>
   `;
@@ -1869,6 +2072,34 @@ function applyParsedPattern() {
 
   const isMulti = parsedPattern.isMultiSection || parsedPattern.sections.length > 1;
 
+  const copyPatternToSection = (srcPattern, dstSection, srcSteps, dstSteps, overwrite) => {
+    const copySteps = Math.min(srcSteps, dstSteps);
+    for (let r = 0; r < instruments.length; r++) {
+      for (let c = 0; c < copySteps; c++) {
+        const srcVal = srcPattern[r] ? (srcPattern[r][c] || "") : "";
+        if (!srcVal) {
+          if (overwrite) {
+            if (dstSection.pattern[r][c]) overwrittenCount++;
+            dstSection.pattern[r][c] = "";
+          }
+          continue;
+        }
+        if (overwrite) {
+          if (dstSection.pattern[r][c] && dstSection.pattern[r][c] !== srcVal) {
+            overwrittenCount++;
+          }
+          dstSection.pattern[r][c] = srcVal;
+          filledCount++;
+        } else if (dstSection.pattern[r][c]) {
+          skippedCount++;
+        } else {
+          dstSection.pattern[r][c] = srcVal;
+          filledCount++;
+        }
+      }
+    }
+  };
+
   if (parsedWriteMode === "append") {
     const currentIdx = state.sections.findIndex((s) => s.id === state.currentSectionId);
     const insertIdx = currentIdx >= 0 ? currentIdx + 1 : state.sections.length;
@@ -1876,17 +2107,15 @@ function applyParsedPattern() {
     parsedPattern.sections.forEach((parsedSection) => {
       const newSection = createEmptySection(parsedSection.name);
       newSection.bpm = parsedSection.bpm;
+      newSection.measureCount = parsedSection.measureCount || 4;
+      newSection.beatsPerMeasure = parsedSection.beatsPerMeasure || 4;
       if (parsedSection.measureRange) {
         newSection.measureRange = { ...parsedSection.measureRange };
       }
-      for (let r = 0; r < instruments.length; r++) {
-        for (let c = 0; c < steps; c++) {
-          if (parsedSection.pattern[r][c]) {
-            newSection.pattern[r][c] = parsedSection.pattern[r][c];
-            filledCount++;
-          }
-        }
-      }
+      resizeSectionPattern(newSection, parsedSection.measureCount || 4, parsedSection.beatsPerMeasure || 4);
+      const srcSteps = parsedSection.pattern[0]?.length || getSectionSteps(parsedSection);
+      const dstSteps = getSectionSteps(newSection);
+      copyPatternToSection(parsedSection.pattern, newSection, srcSteps, dstSteps, true);
       state.sections.splice(insertIdx + appendedCount, 0, newSection);
       appendedCount++;
     });
@@ -1908,35 +2137,26 @@ function applyParsedPattern() {
     if (firstParsed.measureRange) {
       currentSection.measureRange = { ...firstParsed.measureRange };
     }
-    for (let r = 0; r < instruments.length; r++) {
-      for (let c = 0; c < steps; c++) {
-        if (firstParsed.pattern[r][c]) {
-          currentSection.pattern[r][c] = firstParsed.pattern[r][c];
-          filledCount++;
-        } else {
-          if (currentSection.pattern[r][c]) {
-            overwrittenCount++;
-          }
-          currentSection.pattern[r][c] = "";
-        }
-      }
-    }
+    const firstMc = firstParsed.measureCount || 4;
+    const firstBpm = firstParsed.beatsPerMeasure || 4;
+    resizeSectionPattern(currentSection, firstMc, firstBpm);
+    const srcSteps1 = firstParsed.pattern[0]?.length || getSectionSteps(firstParsed);
+    const dstSteps1 = getSectionSteps(currentSection);
+    copyPatternToSection(firstParsed.pattern, currentSection, srcSteps1, dstSteps1, true);
 
     for (let i = 1; i < parsedPattern.sections.length; i++) {
       const parsedSection = parsedPattern.sections[i];
       const newSection = createEmptySection(parsedSection.name);
       newSection.bpm = parsedSection.bpm;
+      newSection.measureCount = parsedSection.measureCount || 4;
+      newSection.beatsPerMeasure = parsedSection.beatsPerMeasure || 4;
       if (parsedSection.measureRange) {
         newSection.measureRange = { ...parsedSection.measureRange };
       }
-      for (let r = 0; r < instruments.length; r++) {
-        for (let c = 0; c < steps; c++) {
-          if (parsedSection.pattern[r][c]) {
-            newSection.pattern[r][c] = parsedSection.pattern[r][c];
-            filledCount++;
-          }
-        }
-      }
+      resizeSectionPattern(newSection, parsedSection.measureCount || 4, parsedSection.beatsPerMeasure || 4);
+      const srcSteps = parsedSection.pattern[0]?.length || getSectionSteps(parsedSection);
+      const dstSteps = getSectionSteps(newSection);
+      copyPatternToSection(parsedSection.pattern, newSection, srcSteps, dstSteps, true);
       state.sections.splice(insertIdx + appendedCount, 0, newSection);
       appendedCount++;
     }
@@ -1955,19 +2175,12 @@ function applyParsedPattern() {
     if (parsedSection.measureRange) {
       section.measureRange = { ...parsedSection.measureRange };
     }
-    for (let r = 0; r < instruments.length; r++) {
-      for (let c = 0; c < steps; c++) {
-        if (parsedSection.pattern[r][c]) {
-          section.pattern[r][c] = parsedSection.pattern[r][c];
-          filledCount++;
-        } else {
-          if (section.pattern[r][c]) {
-            overwrittenCount++;
-          }
-          section.pattern[r][c] = "";
-        }
-      }
-    }
+    const dstMc = parsedSection.measureCount || 4;
+    const dstBpm = parsedSection.beatsPerMeasure || 4;
+    resizeSectionPattern(section, dstMc, dstBpm);
+    const srcSteps = parsedSection.pattern[0]?.length || getSectionSteps(parsedSection);
+    const dstSteps = getSectionSteps(section);
+    copyPatternToSection(parsedSection.pattern, section, srcSteps, dstSteps, true);
     message = `✓ 已覆盖当前段落，写入 <strong>${filledCount}</strong> 个口令，清空 <strong>${overwrittenCount}</strong> 个原有口令。`;
 
   } else {
@@ -1982,17 +2195,9 @@ function applyParsedPattern() {
     if (parsedSection.measureRange) {
       section.measureRange = { ...parsedSection.measureRange };
     }
-    for (let r = 0; r < instruments.length; r++) {
-      for (let c = 0; c < steps; c++) {
-        const parsedValue = parsedSection.pattern[r][c];
-        if (parsedValue && !section.pattern[r][c]) {
-          section.pattern[r][c] = parsedValue;
-          filledCount++;
-        } else if (parsedValue && section.pattern[r][c]) {
-          skippedCount++;
-        }
-      }
-    }
+    const srcSteps = parsedSection.pattern[0]?.length || getSectionSteps(parsedSection);
+    const dstSteps = getSectionSteps(section);
+    copyPatternToSection(parsedSection.pattern, section, srcSteps, dstSteps, false);
     message = `✓ 已成功写入 <strong>${filledCount}</strong> 个口令`;
     if (skippedCount > 0) {
       message += `，已跳过 <strong>${skippedCount}</strong> 个已有内容。`;
@@ -2043,10 +2248,12 @@ function highlight(step) {
 
 function currentRange(section) {
   const sec = section || getCurrentSection();
-  if (!sec) return [0, steps - 1];
-  if (sec.loop === "") return [0, steps - 1];
-  const start = Number(sec.loop) * 4;
-  return [start, start + 3];
+  if (!sec) return [0, 15];
+  const bpm = sec.beatsPerMeasure || 4;
+  const total = getSectionSteps(sec);
+  if (sec.loop === "") return [0, total - 1];
+  const start = Number(sec.loop) * bpm;
+  return [start, start + bpm - 1];
 }
 
 function getPlaySection() {
@@ -2232,9 +2439,10 @@ function stopPlayback() {
         const [start, end] = currentRange(currentPlayedSection);
         if (playhead >= start && playhead <= end) {
           entry.pausePosition = playhead;
+          const beatStr = beatLabelForSection(currentPlayedSection, playhead);
           entry.pauseLabel = currentPlayedSection.id !== entry.sectionId
-            ? `${currentPlayedSection.name} · 第${Math.floor(playhead / 4) + 1}小节第${(playhead % 4) + 1}拍`
-            : `第${Math.floor(playhead / 4) + 1}小节第${(playhead % 4) + 1}拍`;
+            ? `${currentPlayedSection.name} · ${beatStr}`
+            : beatStr;
           entry.sectionId = currentPlayedSection.id;
           entry.sectionName = currentPlayedSection.name;
           entry.bpm = currentPlayedSection.bpm;
@@ -2586,6 +2794,41 @@ sectionsList.addEventListener("click", (event) => {
   const duplicateBtn = event.target.closest("[data-section-duplicate]");
   const deleteBtn = event.target.closest("[data-section-delete]");
   const renameBtn = event.target.closest("[data-section-rename-btn]");
+  const toggleMeasureBtn = event.target.closest("[data-toggle-measure]");
+  const saveMeasureBtn = event.target.closest("[data-save-measure]");
+  const cancelMeasureBtn = event.target.closest("[data-cancel-measure]");
+
+  if (toggleMeasureBtn) {
+    event.stopPropagation();
+    const id = toggleMeasureBtn.dataset.toggleMeasure;
+    editingMeasureSectionId = editingMeasureSectionId === id ? null : id;
+    editingSectionId = null;
+    renderSectionsList();
+    return;
+  }
+
+  if (saveMeasureBtn) {
+    event.stopPropagation();
+    const id = saveMeasureBtn.dataset.saveMeasure;
+    const section = state.sections.find((s) => s.id === id);
+    if (section) {
+      const mcInput = sectionsList.querySelector(`[data-measure-count-input="${id}"]`);
+      const bpmInput = sectionsList.querySelector(`[data-beats-input="${id}"]`);
+      if (mcInput && bpmInput) {
+        resizeSectionPattern(section, mcInput.value, bpmInput.value);
+      }
+    }
+    editingMeasureSectionId = null;
+    render();
+    return;
+  }
+
+  if (cancelMeasureBtn) {
+    event.stopPropagation();
+    editingMeasureSectionId = null;
+    renderSectionsList();
+    return;
+  }
 
   if (duplicateBtn) {
     event.stopPropagation();
@@ -2626,6 +2869,7 @@ sectionsList.addEventListener("click", (event) => {
     event.stopPropagation();
     const id = renameBtn.dataset.sectionRenameBtn;
     editingSectionId = id;
+    editingMeasureSectionId = null;
     renderSectionsList();
     return;
   }
@@ -2662,6 +2906,25 @@ sectionsList.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && event.target.classList.contains("section-name-input")) {
     editingSectionId = null;
     render();
+  }
+  const isMcInput = event.target.classList.contains("measure-count-input");
+  const isBpmInput = event.target.classList.contains("beats-input");
+  const sectionId = event.target.dataset?.measureCountInput || event.target.dataset?.beatsInput;
+  if ((isMcInput || isBpmInput) && event.key === "Enter" && sectionId) {
+    const section = state.sections.find((s) => s.id === sectionId);
+    if (section) {
+      const mcInput = sectionsList.querySelector(`[data-measure-count-input="${sectionId}"]`);
+      const bpmInput = sectionsList.querySelector(`[data-beats-input="${sectionId}"]`);
+      if (mcInput && bpmInput) {
+        resizeSectionPattern(section, mcInput.value, bpmInput.value);
+      }
+    }
+    editingMeasureSectionId = null;
+    render();
+  }
+  if ((isMcInput || isBpmInput) && event.key === "Escape") {
+    editingMeasureSectionId = null;
+    renderSectionsList();
   }
 });
 
@@ -2948,12 +3211,20 @@ function validateAndMigrateScheme(data) {
     } else if (section.pattern.length !== instruments.length) {
       compatibility.warnings.push(`第 ${idx + 1} 个段落乐器数量不匹配，将自动调整。`);
     }
+    if (!section.measureCount) {
+      section.measureCount = 4;
+      if (fileVersion < 5) compatibility.warnings.push(`第 ${idx + 1} 个段落缺少小节数字段，已自动填充为 4。`);
+    }
+    if (!section.beatsPerMeasure) {
+      section.beatsPerMeasure = 4;
+      if (fileVersion < 5) compatibility.warnings.push(`第 ${idx + 1} 个段落缺少拍号字段，已自动填充为 4/4。`);
+    }
     if (!section.measureRange && fileVersion < 3) {
       const measureCount = Math.max(1, Math.ceil(
         section.pattern
           ? section.pattern[0]?.filter((c, i) =>
               section.pattern.some(row => row[i])
-            ).length / 4
+            ).length / (section.beatsPerMeasure || 4)
           : 4
       ));
       section.measureRange = {
@@ -3022,7 +3293,7 @@ function calculateSchemeStats(data) {
     name: data.pieceName || "未命名方案",
     bpm: 0,
     noteCount: 0,
-    gridSize: `${instruments.length}×${steps}`,
+    gridSize: `${instruments.length}×16`,
     sectionCount: 0,
     totalMeasures: 0,
     version: data.schemaVersion || 1
@@ -3032,6 +3303,9 @@ function calculateSchemeStats(data) {
     stats.sectionCount = data.sections.length;
     const firstSection = data.sections.find((s) => s.id === data.currentSectionId) || data.sections[0];
     stats.bpm = firstSection?.bpm || data.bpm || 96;
+    const fsMc = firstSection?.measureCount || 4;
+    const fsBpm = firstSection?.beatsPerMeasure || 4;
+    stats.gridSize = `${instruments.length}×${fsMc * fsBpm}`;
 
     data.sections.forEach((section) => {
       if (Array.isArray(section.notes)) {
@@ -3039,6 +3313,8 @@ function calculateSchemeStats(data) {
       }
       if (section.measureRange) {
         stats.totalMeasures = Math.max(stats.totalMeasures, section.measureRange.end);
+      } else if (section.measureCount) {
+        stats.totalMeasures = Math.max(stats.totalMeasures, section.measureCount);
       }
     });
   } else {
@@ -3429,10 +3705,12 @@ function updateTempoStatusDisplay() {
 
 function getTempoTrainerRange(section) {
   const sec = section || getCurrentSection();
-  if (!sec) return [0, steps - 1];
-  if (tempoTrainer.originalLoop === "") return [0, steps - 1];
-  const start = Number(tempoTrainer.originalLoop) * 4;
-  return [start, start + 3];
+  if (!sec) return [0, 15];
+  const bpm = sec.beatsPerMeasure || 4;
+  const total = getSectionSteps(sec);
+  if (tempoTrainer.originalLoop === "") return [0, total - 1];
+  const start = Number(tempoTrainer.originalLoop) * bpm;
+  return [start, start + bpm - 1];
 }
 
 function getTempoTrainerBeatsPerRound() {
@@ -3739,11 +4017,12 @@ function generateHiddenCells() {
 
   const ratio = getDifficultyRatio();
   const candidateSteps = [];
+  const totalSteps = getSectionSteps(section);
 
-  for (let step = 0; step < steps; step++) {
+  for (let step = 0; step < totalSteps; step++) {
     const activeRows = [];
     for (let row = 0; row < instruments.length; row++) {
-      if (section.pattern[row][step]) {
+      if (section.pattern[row] && section.pattern[row][step]) {
         activeRows.push(row);
       }
     }
@@ -4496,6 +4775,12 @@ function showTaskEditModal(noteId) {
   const note = section.collabNotes.find(n => n.id === noteId);
   if (!note) return;
 
+  const mc = section.measureCount || 4;
+  let targetOptions = `<option value="all" ${note.target === "all" ? "selected" : ""}>全段</option>`;
+  for (let i = 0; i < mc; i++) {
+    targetOptions += `<option value="${i}" ${note.target === i ? "selected" : ""}>第${i + 1}小节</option>`;
+  }
+
   const assigneeOptions = ASSIGNEES.map(a => 
     `<option value="${a.value}" ${note.assignee === a.value ? "selected" : ""}>${a.label}</option>`
   ).join("");
@@ -4527,11 +4812,7 @@ function showTaskEditModal(noteId) {
             <div class="task-edit-field">
               <label>目标小节</label>
               <select id="taskEditTarget">
-                <option value="all" ${note.target === "all" ? "selected" : ""}>全段</option>
-                <option value="0" ${note.target === 0 ? "selected" : ""}>第1小节</option>
-                <option value="1" ${note.target === 1 ? "selected" : ""}>第2小节</option>
-                <option value="2" ${note.target === 2 ? "selected" : ""}>第3小节</option>
-                <option value="3" ${note.target === 3 ? "selected" : ""}>第4小节</option>
+                ${targetOptions}
               </select>
             </div>
           </div>
@@ -4781,14 +5062,23 @@ function generateTasksFromRehearsal() {
   const tasks = [];
   const recent = rehearsalLog.slice(0, 5);
   const pauseMeasures = new Map();
+  const curSection = getCurrentSection();
+  const maxMc = curSection?.measureCount || 4;
+  const bpm = curSection?.beatsPerMeasure || 4;
   recent.forEach(entry => {
     if (entry.pausePosition != null && entry.pauseLabel && !entry.pauseLabel.includes("播放完成")) {
-      const measure = Math.floor(entry.pausePosition / 4);
+      let matchedSec = curSection;
+      if (!matchedSec && entry.snapshot?.sections?.length > 0) {
+        const sid = entry.sectionId || entry.snapshot.currentSectionId;
+        matchedSec = sid ? entry.snapshot.sections.find(s => s.id === sid) || entry.snapshot.sections[0] : entry.snapshot.sections[0];
+      }
+      const entryBpm = matchedSec?.beatsPerMeasure || bpm;
+      const measure = Math.floor(entry.pausePosition / entryBpm);
       pauseMeasures.set(measure, (pauseMeasures.get(measure) || 0) + 1);
     }
   });
   pauseMeasures.forEach((count, measure) => {
-    if (measure >= 0 && measure < 4 && count >= 1) {
+    if (measure >= 0 && measure < maxMc && count >= 1) {
       const priority = count >= 2 ? PRIORITY.HIGH : PRIORITY.MEDIUM;
       tasks.push(makePracticeTask({
         category: "rehearsal",
@@ -4807,6 +5097,9 @@ function generateTasksFromDiagnosis() {
   if (!lastDiagnosisResult) return [];
   const tasks = [];
   const { wrongPositions = [], confusedInstruments = [], accuracy = 100 } = lastDiagnosisResult;
+  const curSection = getCurrentSection();
+  const maxMc = curSection?.measureCount || 4;
+  const bpm = curSection?.beatsPerMeasure || 4;
   if (accuracy < 80) {
     const priority = accuracy < 50 ? PRIORITY.HIGH : PRIORITY.MEDIUM;
     tasks.push(makePracticeTask({
@@ -4820,12 +5113,12 @@ function generateTasksFromDiagnosis() {
   if (Array.isArray(wrongPositions) && wrongPositions.length > 0) {
     const measureMap = new Map();
     wrongPositions.forEach(pos => {
-      const measure = Math.floor((pos.step || 0) / 4);
+      const measure = Math.floor((pos.step || 0) / bpm);
       if (!measureMap.has(measure)) measureMap.set(measure, []);
       measureMap.get(measure).push(pos);
     });
     measureMap.forEach((positions, measure) => {
-      if (measure >= 0 && measure < 4) {
+      if (measure >= 0 && measure < maxMc) {
         const beatLabels = positions.map(p => p.beatLabel || `第${measure + 1}小节`).join("、");
         const priority = positions.length >= 2 ? PRIORITY.HIGH : PRIORITY.MEDIUM;
         tasks.push(makePracticeTask({
@@ -5197,17 +5490,23 @@ function computeSectionDiff(curSection, histSection) {
 
   const curPattern = curSection.pattern;
   const histPattern = histSection.pattern;
+  const curSteps = getSectionSteps(curSection);
+  const histSteps = getSectionSteps(histSection);
+  const maxSteps = Math.max(curSteps, histSteps);
   for (let row = 0; row < instruments.length; row++) {
-    for (let step = 0; step < steps; step++) {
-      const curVal = (curPattern[row] && curPattern[row][step]) || "";
-      const histVal = (histPattern[row] && histPattern[row][step]) || "";
-      if (curVal !== histVal) {
+    for (let step = 0; step < maxSteps; step++) {
+      const curExists = step < curSteps;
+      const histExists = step < histSteps;
+      const curVal = (curExists && curPattern[row] && curPattern[row][step]) || "";
+      const histVal = (histExists && histPattern[row] && histPattern[row][step]) || "";
+      if (curVal !== histVal || curExists !== histExists) {
         diff.gridDiff.push({
           row,
           step,
           instrument: instruments[row].name,
           curVal,
-          histVal
+          histVal,
+          status: curExists && !histExists ? "added" : (!curExists && histExists ? "removed" : "modified")
         });
       }
     }
