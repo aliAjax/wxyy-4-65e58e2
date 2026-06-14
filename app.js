@@ -876,11 +876,31 @@ function getMeasureData() {
 function getFocusMeasures() {
   const measures = getMeasureData();
   const difficultyKeywords = /难|易错|注意|重点|慢|加速|易错点|节奏|配合/;
-  return measures
+  let scored = measures
     .map((m) => ({
       ...m,
       score: (m.noteCount * 3) + (1 - m.ratio) * 2 + (m.instrumentCoverage >= 3 ? 1 : 0)
-    }))
+    }));
+
+  if (typeof completedPracticeIds !== "undefined" && Array.isArray(practiceTasks)) {
+    const completedMeasures = new Set();
+    practiceTasks.forEach(task => {
+      if (completedPracticeIds.has(task.id) && task.measure != null) {
+        completedMeasures.add(task.measure);
+      }
+    });
+    if (completedMeasures.size > 0) {
+      scored = scored.map(m => {
+        const measureIdx = m.measure - 1;
+        if (completedMeasures.has(measureIdx)) {
+          return { ...m, score: m.score * 0.3 };
+        }
+        return m;
+      });
+    }
+  }
+
+  return scored
     .filter((m) => m.score > 0.3 || m.hasNotes)
     .sort((a, b) => b.score - a.score)
     .slice(0, 3);
@@ -954,6 +974,34 @@ function getSuggestions() {
 
   if (state.saved.length === 0 && totalRatio >= 0.5) {
     suggestions.push({ icon: "💾", html: `建议<strong>保存当前方案</strong>作为基础版本，方便后续对比迭代。` });
+  }
+
+  if (typeof completedPracticeIds !== "undefined" && Array.isArray(practiceTasks)) {
+    const completedMeasureNums = new Set();
+    practiceTasks.forEach(task => {
+      if (completedPracticeIds.has(task.id) && task.measure != null) {
+        completedMeasureNums.add(task.measure + 1);
+      }
+    });
+    const pendingTaskCount = practiceTasks.filter(t => !completedPracticeIds.has(t.id)).length;
+    if (pendingTaskCount > 0) {
+      const insertAt = suggestions.length < 3 ? suggestions.length : 1;
+      suggestions.splice(insertAt, 0, {
+        icon: "✅",
+        html: `练习清单中还有 <strong>${pendingTaskCount}</strong> 项待完成任务，完成后可提升排练效率。`
+      });
+    }
+    if (completedMeasureNums.size > 0) {
+      for (let i = suggestions.length - 1; i >= 0; i--) {
+        const s = suggestions[i];
+        for (const num of completedMeasureNums) {
+          if (s.html && s.html.includes(`第${num}小节`)) {
+            suggestions.splice(i, 1);
+            break;
+          }
+        }
+      }
+    }
   }
 
   return suggestions.slice(0, 4);
@@ -4071,54 +4119,6 @@ function renderPracticeList() {
     </div>
   `;
 }
-
-const originalGetFocusMeasures = getFocusMeasures;
-function enhancedGetFocusMeasures() {
-  const measures = originalGetFocusMeasures();
-  if (measures.length === 0) return measures;
-  const { completedMeasures } = getCompletedMeasureSet();
-  return measures
-    .map(m => {
-      let adjustedScore = m.score;
-      const measureIdx = m.measure - 1;
-      if (completedMeasures.has(measureIdx)) {
-        adjustedScore *= 0.3;
-      }
-      return { ...m, adjustedScore };
-    })
-    .sort((a, b) => b.adjustedScore - a.adjustedScore)
-    .filter(m => m.adjustedScore > 0.1)
-    .slice(0, 3);
-}
-
-const originalGetSuggestions = getSuggestions;
-function enhancedGetSuggestions() {
-  const suggestions = originalGetSuggestions();
-  const section = getCurrentSection();
-  if (!section) return suggestions;
-  const { completedMeasures } = getCompletedMeasureSet();
-  const pendingTaskCount = practiceTasks.filter(t => !completedPracticeIds.has(t.id)).length;
-  if (pendingTaskCount > 0) {
-    const insertAt = suggestions.length < 3 ? suggestions.length : 1;
-    suggestions.splice(insertAt, 0, {
-      icon: "✅",
-      html: `练习清单中还有 <strong>${pendingTaskCount}</strong> 项待完成任务，完成后可提升排练效率。`
-    });
-  }
-  return suggestions.filter(s => {
-    if (completedMeasures.size > 0) {
-      for (const cm of completedMeasures) {
-        if (s.html && s.html.includes(`第${cm + 1}小节`)) {
-          return false;
-        }
-      }
-    }
-    return true;
-  }).slice(0, 4);
-}
-
-getFocusMeasures = enhancedGetFocusMeasures;
-getSuggestions = enhancedGetSuggestions;
 
 function normalizeSavedToSections(item) {
   if (Array.isArray(item.sections) && item.sections.length > 0) {
