@@ -6103,3 +6103,1454 @@ setInterval(() => {
     renderRehearsalTimeline();
   }
 }, 30000);
+
+const mergeOverlay = document.getElementById("mergeOverlay");
+const mergeCloseBtn = document.getElementById("mergeCloseBtn");
+const mergeCancelBtn = document.getElementById("mergeCancelBtn");
+const mergeAutoMergeBtn = document.getElementById("mergeAutoMergeBtn");
+const mergePreviewBtn = document.getElementById("mergePreviewBtn");
+const mergeExportBtn = document.getElementById("mergeExportBtn");
+const mergeApplyBtn = document.getElementById("mergeApplyBtn");
+const schemeMergeFileInput = document.getElementById("schemeMergeFileInput");
+const mergeTotalDiffsEl = document.getElementById("mergeTotalDiffs");
+const mergeAutoDiffsEl = document.getElementById("mergeAutoDiffs");
+const mergeConflictDiffsEl = document.getElementById("mergeConflictDiffs");
+const mergeResolvedDiffsEl = document.getElementById("mergeResolvedDiffs");
+const mergeSectionListEl = document.getElementById("mergeSectionList");
+const mergeGridSectionSelect = document.getElementById("mergeGridSectionSelect");
+const mergeGridCompareEl = document.getElementById("mergeGridCompare");
+const mergeSectionsListEl = document.getElementById("mergeSectionsList");
+const mergeVoiceSectionSelect = document.getElementById("mergeVoiceSectionSelect");
+const mergeVoiceCompareEl = document.getElementById("mergeVoiceCompare");
+const mergeNoteSectionSelect = document.getElementById("mergeNoteSectionSelect");
+const mergeNotesCompareEl = document.getElementById("mergeNotesCompare");
+const mergePracticeCompareEl = document.getElementById("mergePracticeCompare");
+const mergeConflictListEl = document.getElementById("mergeConflictList");
+const mergeConflictProgressEl = document.getElementById("mergeConflictProgress");
+const mergePrevConflictBtn = document.getElementById("mergePrevConflictBtn");
+const mergeNextConflictBtn = document.getElementById("mergeNextConflictBtn");
+const mergePreviewBar = document.getElementById("mergePreviewBar");
+const mergeExitPreviewBtn = document.getElementById("mergeExitPreviewBtn");
+
+let mergeState = null;
+let originalStateBackup = null;
+let originalRehearsalLogBackup = null;
+let mergePreviewActive = false;
+let currentConflictIndex = 0;
+
+function initMergeState() {
+  mergeState = {
+    collabData: null,
+    collabRehearsalLog: [],
+    diffs: {
+      sections: [],
+      grid: {},
+      bpm: {},
+      voices: {},
+      notes: {},
+      practice: []
+    },
+    conflicts: [],
+    resolvedConflicts: {},
+    mergedData: null,
+    mergedRehearsalLog: [],
+    autoMerged: false
+  };
+  mergePreviewActive = false;
+  currentConflictIndex = 0;
+}
+
+function openMergeModal() {
+  initMergeState();
+  originalStateBackup = JSON.parse(JSON.stringify(state));
+  originalRehearsalLogBackup = JSON.parse(JSON.stringify(rehearsalLog));
+  mergeOverlay.style.display = "flex";
+  updateMergeStats();
+  renderMergeOverview();
+}
+
+function closeMergeModal() {
+  if (mergePreviewActive) {
+    exitMergePreview();
+  }
+  mergeOverlay.style.display = "none";
+  mergeState = null;
+  originalStateBackup = null;
+  originalRehearsalLogBackup = null;
+  schemeMergeFileInput.value = "";
+}
+
+function updateMergeStats() {
+  if (!mergeState) {
+    mergeTotalDiffsEl.textContent = "0";
+    mergeAutoDiffsEl.textContent = "0";
+    mergeConflictDiffsEl.textContent = "0";
+    mergeResolvedDiffsEl.textContent = "0";
+    return;
+  }
+
+  const totalDiffs = countTotalDiffs();
+  const conflictCount = mergeState.conflicts.length;
+  const resolvedCount = Object.keys(mergeState.resolvedConflicts).length;
+  const autoCount = totalDiffs - conflictCount;
+
+  mergeTotalDiffsEl.textContent = totalDiffs;
+  mergeAutoDiffsEl.textContent = Math.max(0, autoCount);
+  mergeConflictDiffsEl.textContent = conflictCount;
+  mergeResolvedDiffsEl.textContent = resolvedCount;
+
+  const hasData = mergeState.collabData !== null;
+  mergeAutoMergeBtn.disabled = !hasData || mergeState.autoMerged;
+  mergePreviewBtn.disabled = !hasData || !mergeState.autoMerged;
+  mergeExportBtn.disabled = !hasData || !mergeState.autoMerged;
+  mergeApplyBtn.disabled = !hasData || !mergeState.autoMerged || (conflictCount > 0 && resolvedCount < conflictCount);
+}
+
+function countTotalDiffs() {
+  if (!mergeState || !mergeState.diffs) return 0;
+  let count = 0;
+
+  if (mergeState.diffs.sections) {
+    count += mergeState.diffs.sections.filter(s => s.type !== "same").length;
+  }
+
+  if (mergeState.diffs.practice) {
+    count += mergeState.diffs.practice.filter(p => p.type !== "same").length;
+  }
+
+  count += mergeState.conflicts.length;
+
+  return Math.max(0, count);
+}
+
+async function handleMergeFileSelect(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  try {
+    const rawData = await parseSchemeFile(file);
+    const { data } = validateAndMigrateScheme(rawData);
+    mergeState.collabData = data;
+
+    if (data.rehearsalLog && Array.isArray(data.rehearsalLog)) {
+      mergeState.collabRehearsalLog = data.rehearsalLog;
+    }
+
+    computeAllDiffs();
+    updateMergeStats();
+    renderMergeOverview();
+    renderAllMergeTabs();
+  } catch (error) {
+    alert("协作文件解析失败：" + error.message);
+    schemeMergeFileInput.value = "";
+  }
+}
+
+function computeAllDiffs() {
+  if (!mergeState || !mergeState.collabData) return;
+
+  const ourSections = state.sections || [];
+  const theirSections = mergeState.collabData.sections || [];
+
+  mergeState.diffs.sections = compareSectionLists(ourSections, theirSections);
+  mergeState.diffs.grid = {};
+  mergeState.diffs.bpm = {};
+  mergeState.diffs.voices = {};
+  mergeState.diffs.notes = {};
+
+  const ourSectionMap = new Map(ourSections.map(s => [s.id, s]));
+  const theirSectionMap = new Map(theirSections.map(s => [s.id, s]));
+
+  const allSectionIds = new Set([...ourSectionMap.keys(), ...theirSectionMap.keys()]);
+
+  allSectionIds.forEach(sectionId => {
+    const ours = ourSectionMap.get(sectionId);
+    const theirs = theirSectionMap.get(sectionId);
+
+    if (ours && theirs) {
+      mergeState.diffs.grid[sectionId] = compareGrid(ours, theirs);
+      mergeState.diffs.bpm[sectionId] = compareBPM(ours, theirs);
+      mergeState.diffs.voices[sectionId] = compareVoices(ours, theirs);
+      mergeState.diffs.notes[sectionId] = compareNotes(ours, theirs);
+    }
+  });
+
+  mergeState.diffs.practice = comparePracticeLogs();
+  detectConflicts();
+}
+
+function compareSectionLists(ours, theirs) {
+  const ourIds = new Set(ours.map(s => s.id));
+  const theirIds = new Set(theirs.map(s => s.id));
+  const result = [];
+
+  ours.forEach(s => {
+    if (theirIds.has(s.id)) {
+      result.push({ id: s.id, name: s.name, type: "same" });
+    } else {
+      result.push({ id: s.id, name: s.name, type: "del" });
+    }
+  });
+
+  theirs.forEach(s => {
+    if (!ourIds.has(s.id)) {
+      result.push({ id: s.id, name: s.name, type: "add" });
+    }
+  });
+
+  return result;
+}
+
+function compareGrid(ours, theirs) {
+  const ourPattern = ours.pattern || [];
+  const theirPattern = theirs.pattern || [];
+  const rows = Math.max(ourPattern.length, theirPattern.length, 4);
+  const cols = Math.max(
+    ourPattern[0]?.length || 0,
+    theirPattern[0]?.length || 0,
+    getSectionSteps(ours),
+    getSectionSteps(theirs)
+  );
+
+  const diffs = [];
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const ourVal = ourPattern[row]?.[col] || "";
+      const theirVal = theirPattern[row]?.[col] || "";
+
+      if (ourVal !== theirVal) {
+        let type;
+        if (!ourVal && theirVal) type = "add";
+        else if (ourVal && !theirVal) type = "del";
+        else type = "mod";
+
+        diffs.push({
+          row,
+          col,
+          ours: ourVal,
+          theirs: theirVal,
+          type
+        });
+      }
+    }
+  }
+
+  return diffs;
+}
+
+function compareBPM(ours, theirs) {
+  const fields = ["bpm", "name", "measureCount", "beatsPerMeasure", "loop"];
+  const diffs = [];
+
+  fields.forEach(field => {
+    const ourVal = ours[field];
+    const theirVal = theirs[field];
+
+    if (ourVal !== theirVal) {
+      diffs.push({
+        field,
+        ours: ourVal,
+        theirs: theirVal,
+        type: "mod"
+      });
+    }
+  });
+
+  return diffs;
+}
+
+function compareVoices(ours, theirs) {
+  const ourVoices = ours.enabledInstruments || [true, true, true, true];
+  const theirVoices = theirs.enabledInstruments || [true, true, true, true];
+  const diffs = [];
+
+  for (let i = 0; i < 4; i++) {
+    if (ourVoices[i] !== theirVoices[i]) {
+      diffs.push({
+        index: i,
+        name: instruments[i]?.name || `声部${i + 1}`,
+        ours: ourVoices[i],
+        theirs: theirVoices[i],
+        type: "mod"
+      });
+    }
+  }
+
+  return diffs;
+}
+
+function compareNotes(ours, theirs) {
+  const ourNotes = ours.collabNotes || [];
+  const theirNotes = theirs.collabNotes || [];
+  const diffs = [];
+
+  const ourMap = new Map(ourNotes.map(n => [n.id, n]));
+  const theirMap = new Map(theirNotes.map(n => [n.id, n]));
+
+  const allIds = new Set([...ourMap.keys(), ...theirMap.keys()]);
+
+  allIds.forEach(id => {
+    const oursNote = ourMap.get(id);
+    const theirsNote = theirMap.get(id);
+
+    if (oursNote && theirsNote) {
+      const hasDiff = oursNote.text !== theirsNote.text ||
+        oursNote.type !== theirsNote.type ||
+        oursNote.done !== theirsNote.done;
+      if (hasDiff) {
+        diffs.push({ id, type: "mod", ours: oursNote, theirs: theirsNote });
+      } else {
+        diffs.push({ id, type: "same", ours: oursNote, theirs: theirsNote });
+      }
+    } else if (theirsNote) {
+      diffs.push({ id, type: "add", theirs: theirsNote });
+    } else {
+      diffs.push({ id, type: "del", ours: oursNote });
+    }
+  });
+
+  return diffs;
+}
+
+function comparePracticeLogs() {
+  const ourLog = rehearsalLog || [];
+  const theirLog = mergeState.collabRehearsalLog || [];
+  const diffs = [];
+
+  const ourMap = new Map(ourLog.map(r => [r.id, r]));
+  const theirMap = new Map(theirLog.map(r => [r.id, r]));
+
+  const allIds = new Set([...ourMap.keys(), ...theirMap.keys()]);
+
+  allIds.forEach(id => {
+    const ours = ourMap.get(id);
+    const theirs = theirMap.get(id);
+
+    if (ours && theirs) {
+      diffs.push({ id, type: "same", ours, theirs });
+    } else if (theirs) {
+      diffs.push({ id, type: "add", theirs });
+    } else {
+      diffs.push({ id, type: "del", ours });
+    }
+  });
+
+  return diffs;
+}
+
+function detectConflicts() {
+  mergeState.conflicts = [];
+
+  const sectionDiffs = mergeState.diffs.sections || [];
+  sectionDiffs.forEach(s => {
+    if (s.type === "add") {
+      mergeState.conflicts.push({
+        id: `section_add_${s.id}`,
+        type: "section_add",
+        sectionId: s.id,
+        sectionName: s.name,
+        description: `新增段落「${s.name}」`,
+        ours: null,
+        theirs: s,
+        autoResolve: "accept"
+      });
+    } else if (s.type === "del") {
+      mergeState.conflicts.push({
+        id: `section_del_${s.id}`,
+        type: "section_del",
+        sectionId: s.id,
+        sectionName: s.name,
+        description: `删除段落「${s.name}」`,
+        ours: s,
+        theirs: null,
+        autoResolve: "reject"
+      });
+    }
+  });
+
+  const practiceDiffs = mergeState.diffs.practice || [];
+  practiceDiffs.forEach(p => {
+    if (p.type === "add") {
+      mergeState.conflicts.push({
+        id: `practice_add_${p.id}`,
+        type: "practice_add",
+        practiceId: p.id,
+        description: `新增练习记录（${p.theirs?.sectionName || "未知段落"}）`,
+        ours: null,
+        theirs: p.theirs,
+        autoResolve: "accept"
+      });
+    }
+  });
+
+  Object.keys(mergeState.diffs.grid || {}).forEach(sectionId => {
+    const gridDiffs = mergeState.diffs.grid[sectionId] || [];
+    const section = state.sections.find(s => s.id === sectionId) ||
+      mergeState.collabData.sections.find(s => s.id === sectionId);
+    const sectionName = section?.name || "未知段落";
+
+    if (gridDiffs.length > 0) {
+      const hasMod = gridDiffs.some(d => d.type === "mod");
+      if (hasMod) {
+        mergeState.conflicts.push({
+          id: `grid_${sectionId}`,
+          type: "grid",
+          sectionId,
+          sectionName,
+          description: `谱面格子改动（${gridDiffs.length}处）`,
+          gridDiffs,
+          autoResolve: null
+        });
+      }
+    }
+  });
+
+  Object.keys(mergeState.diffs.bpm || {}).forEach(sectionId => {
+    const bpmDiffs = mergeState.diffs.bpm[sectionId] || [];
+    const section = state.sections.find(s => s.id === sectionId) ||
+      mergeState.collabData.sections.find(s => s.id === sectionId);
+    const sectionName = section?.name || "未知段落";
+
+    bpmDiffs.forEach(diff => {
+      mergeState.conflicts.push({
+        id: `bpm_${sectionId}_${diff.field}`,
+        type: "bpm",
+        sectionId,
+        sectionName,
+        field: diff.field,
+        description: `${sectionName} - ${getBPMFieldLabel(diff.field)}`,
+        ours: diff.ours,
+        theirs: diff.theirs,
+        autoResolve: null
+      });
+    });
+  });
+
+  Object.keys(mergeState.diffs.voices || {}).forEach(sectionId => {
+    const voiceDiffs = mergeState.diffs.voices[sectionId] || [];
+    const section = state.sections.find(s => s.id === sectionId) ||
+      mergeState.collabData.sections.find(s => s.id === sectionId);
+    const sectionName = section?.name || "未知段落";
+
+    if (voiceDiffs.length > 0) {
+      mergeState.conflicts.push({
+        id: `voices_${sectionId}`,
+        type: "voices",
+        sectionId,
+        sectionName,
+        voiceDiffs,
+        description: `${sectionName} - 声部开关`,
+        autoResolve: null
+      });
+    }
+  });
+
+  Object.keys(mergeState.diffs.notes || {}).forEach(sectionId => {
+    const noteDiffs = mergeState.diffs.notes[sectionId] || [];
+    const section = state.sections.find(s => s.id === sectionId) ||
+      mergeState.collabData.sections.find(s => s.id === sectionId);
+    const sectionName = section?.name || "未知段落";
+
+    noteDiffs.forEach(diff => {
+      if (diff.type === "mod") {
+        mergeState.conflicts.push({
+          id: `note_${sectionId}_${diff.id}`,
+          type: "note_mod",
+          sectionId,
+          sectionName,
+          noteId: diff.id,
+          description: `${sectionName} - 批注改动`,
+          ours: diff.ours,
+          theirs: diff.theirs,
+          autoResolve: null
+        });
+      } else if (diff.type === "add") {
+        mergeState.conflicts.push({
+          id: `note_add_${sectionId}_${diff.id}`,
+          type: "note_add",
+          sectionId,
+          sectionName,
+          noteId: diff.id,
+          description: `${sectionName} - 新增批注`,
+          ours: null,
+          theirs: diff.theirs,
+          autoResolve: "accept"
+        });
+      } else if (diff.type === "del") {
+        mergeState.conflicts.push({
+          id: `note_del_${sectionId}_${diff.id}`,
+          type: "note_del",
+          sectionId,
+          sectionName,
+          noteId: diff.id,
+          description: `${sectionName} - 删除批注`,
+          ours: diff.ours,
+          theirs: null,
+          autoResolve: "reject"
+        });
+      }
+    });
+  });
+}
+
+function getBPMFieldLabel(field) {
+  const labels = {
+    bpm: "BPM 速度",
+    name: "段落名称",
+    measureCount: "小节数",
+    beatsPerMeasure: "每小节拍数",
+    loop: "循环标签"
+  };
+  return labels[field] || field;
+}
+
+function autoMerge() {
+  if (!mergeState || !mergeState.collabData) return;
+
+  const ourSections = deepCloneSections(state.sections);
+  const theirSections = deepCloneSections(mergeState.collabData.sections);
+  const ourSectionMap = new Map(ourSections.map(s => [s.id, s]));
+  const theirSectionMap = new Map(theirSections.map(s => [s.id, s]));
+
+  const allSectionIds = new Set([...ourSectionMap.keys(), ...theirSectionMap.keys()]);
+
+  const mergedSections = [];
+
+  allSectionIds.forEach(sectionId => {
+    const ours = ourSectionMap.get(sectionId);
+    const theirs = theirSectionMap.get(sectionId);
+
+    if (ours && theirs) {
+      const merged = deepCloneSection(ours);
+
+      const gridDiffs = mergeState.diffs.grid[sectionId] || [];
+      gridDiffs.forEach(diff => {
+        const conflictId = `grid_${sectionId}`;
+        const resolution = mergeState.resolvedConflicts[conflictId];
+
+        if (resolution === "theirs" || (!resolution && diff.type !== "mod")) {
+          if (!merged.pattern) merged.pattern = [];
+          if (!merged.pattern[diff.row]) merged.pattern[diff.row] = [];
+          merged.pattern[diff.row][diff.col] = diff.theirs;
+        }
+      });
+
+      const bpmDiffs = mergeState.diffs.bpm[sectionId] || [];
+      bpmDiffs.forEach(diff => {
+        const conflictId = `bpm_${sectionId}_${diff.field}`;
+        const resolution = mergeState.resolvedConflicts[conflictId];
+
+        if (resolution === "theirs") {
+          merged[diff.field] = diff.theirs;
+        }
+      });
+
+      const voiceConflictId = `voices_${sectionId}`;
+      const voiceResolution = mergeState.resolvedConflicts[voiceConflictId];
+      if (voiceResolution === "theirs") {
+        merged.enabledInstruments = [...theirs.enabledInstruments];
+      }
+
+      const noteDiffs = mergeState.diffs.notes[sectionId] || [];
+      const mergedNotes = [];
+      const ourNoteMap = new Map((ours.collabNotes || []).map(n => [n.id, n]));
+      const theirNoteMap = new Map((theirs.collabNotes || []).map(n => [n.id, n]));
+
+      const allNoteIds = new Set([...ourNoteMap.keys(), ...theirNoteMap.keys()]);
+      allNoteIds.forEach(noteId => {
+        const ourNote = ourNoteMap.get(noteId);
+        const theirNote = theirNoteMap.get(noteId);
+
+        if (ourNote && theirNote) {
+          const conflictId = `note_${sectionId}_${noteId}`;
+          const resolution = mergeState.resolvedConflicts[conflictId];
+          if (resolution === "theirs") {
+            mergedNotes.push({ ...theirNote });
+          } else {
+            mergedNotes.push({ ...ourNote });
+          }
+        } else if (theirNote) {
+          const conflictId = `note_add_${sectionId}_${noteId}`;
+          const resolution = mergeState.resolvedConflicts[conflictId];
+          if (resolution !== "reject") {
+            mergedNotes.push({ ...theirNote });
+          }
+        } else if (ourNote) {
+          const conflictId = `note_del_${sectionId}_${noteId}`;
+          const resolution = mergeState.resolvedConflicts[conflictId];
+          if (resolution !== "accept") {
+            mergedNotes.push({ ...ourNote });
+          }
+        }
+      });
+      merged.collabNotes = mergedNotes;
+
+      mergedSections.push(merged);
+    } else if (theirs) {
+      const conflictId = `section_add_${sectionId}`;
+      const resolution = mergeState.resolvedConflicts[conflictId];
+      if (resolution !== "reject") {
+        mergedSections.push(deepCloneSection(theirs));
+      }
+    } else if (ours) {
+      const conflictId = `section_del_${sectionId}`;
+      const resolution = mergeState.resolvedConflicts[conflictId];
+      if (resolution !== "accept") {
+        mergedSections.push(deepCloneSection(ours));
+      }
+    }
+  });
+
+  const sectionDiffList = mergeState.diffs.sections || [];
+  const orderedIds = [];
+  sectionDiffList.forEach(s => {
+    if (!orderedIds.includes(s.id)) orderedIds.push(s.id);
+  });
+  theirSections.forEach(s => {
+    if (!orderedIds.includes(s.id)) orderedIds.push(s.id);
+  });
+
+  const orderedMergedSections = orderedIds
+    .map(id => mergedSections.find(s => s.id === id))
+    .filter(Boolean);
+
+  const mergedRehearsalLog = [...rehearsalLog];
+  const practiceDiffs = mergeState.diffs.practice || [];
+  practiceDiffs.forEach(p => {
+    if (p.type === "add") {
+      const conflictId = `practice_add_${p.id}`;
+      const resolution = mergeState.resolvedConflicts[conflictId];
+      if (resolution !== "reject") {
+        if (!mergedRehearsalLog.find(r => r.id === p.id)) {
+          mergedRehearsalLog.push({ ...p.theirs });
+        }
+      }
+    }
+  });
+
+  mergedRehearsalLog.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+  mergeState.mergedData = {
+    ...state,
+    pieceName: mergeState.collabData.pieceName || state.pieceName,
+    sections: orderedMergedSections,
+    continuousPlay: state.continuousPlay,
+    currentSectionId: state.currentSectionId || orderedMergedSections[0]?.id,
+    saved: state.saved
+  };
+  mergeState.mergedRehearsalLog = mergedRehearsalLog;
+  mergeState.autoMerged = true;
+
+  updateMergeStats();
+}
+
+function applyAutoMerge() {
+  if (!mergeState || !mergeState.collabData) return;
+
+  mergeState.conflicts.forEach(conflict => {
+    if (conflict.autoResolve && !mergeState.resolvedConflicts[conflict.id]) {
+      if (conflict.autoResolve === "accept") {
+        mergeState.resolvedConflicts[conflict.id] = "theirs";
+      } else if (conflict.autoResolve === "reject") {
+        mergeState.resolvedConflicts[conflict.id] = "ours";
+      }
+    }
+  });
+
+  autoMerge();
+  renderMergeConflicts();
+}
+
+function resolveConflict(conflictId, resolution) {
+  mergeState.resolvedConflicts[conflictId] = resolution;
+  autoMerge();
+  renderMergeConflicts();
+  updateMergeStats();
+}
+
+function enterMergePreview() {
+  if (!mergeState || !mergeState.mergedData) return;
+
+  originalStateBackup = JSON.parse(JSON.stringify(state));
+  originalRehearsalLogBackup = JSON.parse(JSON.stringify(rehearsalLog));
+
+  state.pieceName = mergeState.mergedData.pieceName;
+  state.sections = deepCloneSections(mergeState.mergedData.sections);
+  state.currentSectionId = mergeState.mergedData.currentSectionId;
+  state.continuousPlay = mergeState.mergedData.continuousPlay;
+
+  rehearsalLog = [...mergeState.mergedRehearsalLog];
+
+  mergePreviewActive = true;
+  mergePreviewBar.style.display = "flex";
+
+  render();
+}
+
+function exitMergePreview() {
+  if (!originalStateBackup) return;
+
+  state.pieceName = originalStateBackup.pieceName;
+  state.sections = deepCloneSections(originalStateBackup.sections);
+  state.currentSectionId = originalStateBackup.currentSectionId;
+  state.continuousPlay = originalStateBackup.continuousPlay;
+
+  rehearsalLog = [...originalRehearsalLogBackup];
+
+  mergePreviewActive = false;
+  mergePreviewBar.style.display = "none";
+
+  render();
+}
+
+function applyMergeResult() {
+  if (!mergeState || !mergeState.mergedData) return;
+
+  const conflictCount = mergeState.conflicts.length;
+  const resolvedCount = Object.keys(mergeState.resolvedConflicts).length;
+  if (conflictCount > 0 && resolvedCount < conflictCount) {
+    alert("请先处理所有冲突项后再应用合并。");
+    return;
+  }
+
+  if (mergePreviewActive) {
+    exitMergePreview();
+  }
+
+  state.pieceName = mergeState.mergedData.pieceName;
+  state.sections = deepCloneSections(mergeState.mergedData.sections);
+  state.currentSectionId = mergeState.mergedData.currentSectionId;
+  state.continuousPlay = mergeState.mergedData.continuousPlay;
+
+  rehearsalLog = [...mergeState.mergedRehearsalLog];
+  saveRehearsalLog();
+  save();
+  render();
+  closeMergeModal();
+  alert("合并成功！协作版本的改动已应用到当前方案。");
+}
+
+function exportMergeResult() {
+  if (!mergeState || !mergeState.mergedData) return;
+
+  try {
+    const exportData = {
+      schemaVersion: SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      pieceName: mergeState.mergedData.pieceName,
+      sections: deepCloneSections(mergeState.mergedData.sections),
+      currentSectionId: mergeState.mergedData.currentSectionId,
+      continuousPlay: mergeState.mergedData.continuousPlay,
+      saved: deepCloneSavedList(mergeState.mergedData.saved || []),
+      rehearsalLog: mergeState.mergedRehearsalLog,
+      appInfo: {
+        name: "传统戏曲锣鼓经排练可视化",
+        version: "1.0.0",
+        note: "协作合并结果"
+      }
+    };
+
+    const jsonStr = JSON.stringify(exportData, null, 2);
+    const blob = new Blob([jsonStr], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const safeName = (mergeState.mergedData.pieceName || "合并方案").replace(/[<>:"/\\|?*]/g, "_");
+    const dateStr = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `${safeName}_合并_${dateStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    alert("导出失败：" + error.message);
+  }
+}
+
+function renderAllMergeTabs() {
+  renderMergeOverview();
+  renderMergeGridSelects();
+  renderMergeGrid();
+  renderMergeSections();
+  renderMergeVoiceSelects();
+  renderMergeVoices();
+  renderMergeNoteSelects();
+  renderMergeNotes();
+  renderMergePractice();
+  renderMergeConflicts();
+}
+
+function renderMergeOverview() {
+  if (!mergeState || !mergeState.collabData) {
+    mergeSectionListEl.innerHTML = `
+      <div style="text-align:center; padding: 40px 20px; color: var(--muted);">
+        <div style="font-size: 48px; margin-bottom: 12px;">📁</div>
+        <p style="margin: 0 0 8px; font-weight: 600;">请选择协作版本文件</p>
+        <p style="margin: 0; font-size: 12px;">点击顶部「协作合并导入」按钮选择对方导出的 JSON 文件</p>
+      </div>
+    `;
+    return;
+  }
+
+  const sections = mergeState.diffs.sections || [];
+
+  mergeSectionListEl.innerHTML = sections.map((s, idx) => {
+    const section = state.sections.find(sec => sec.id === s.id) ||
+      mergeState.collabData.sections.find(sec => sec.id === s.id);
+    const bpm = section?.bpm || "-";
+
+    const gridDiffs = mergeState.diffs.grid[s.id] || [];
+    const bpmDiffs = mergeState.diffs.bpm[s.id] || [];
+    const voiceDiffs = mergeState.diffs.voices[s.id] || [];
+    const noteDiffs = mergeState.diffs.notes[s.id] || [];
+
+    const hasGridDiff = gridDiffs.length > 0;
+    const hasBpmDiff = bpmDiffs.length > 0;
+    const hasVoiceDiff = voiceDiffs.length > 0;
+    const hasNoteDiff = noteDiffs.some(n => n.type !== "same");
+
+    const typeLabels = {
+      add: `<span class="merge-badge merge-badge-add">新增</span>`,
+      del: `<span class="merge-badge merge-badge-del">删除</span>`,
+      same: `<span class="merge-badge merge-badge-mod">相同</span>`
+    };
+
+    let tags = "";
+    if (s.type === "same") {
+      if (hasGridDiff) tags += `<span class="merge-section-diff-tag diff-tag-grid">谱面 ${gridDiffs.length}</span>`;
+      if (hasBpmDiff) tags += `<span class="merge-section-diff-tag diff-tag-bpm">BPM ${bpmDiffs.length}</span>`;
+      if (hasVoiceDiff) tags += `<span class="merge-section-diff-tag diff-tag-voice">声部 ${voiceDiffs.length}</span>`;
+      if (hasNoteDiff) tags += `<span class="merge-section-diff-tag diff-tag-note">批注 ${noteDiffs.filter(n => n.type !== "same").length}</span>`;
+      if (!hasGridDiff && !hasBpmDiff && !hasVoiceDiff && !hasNoteDiff) {
+        tags = `<span class="merge-section-diff-tag diff-tag-same">无差异</span>`;
+      }
+    }
+
+    return `
+      <div class="merge-section-item">
+        <div class="merge-section-index">${idx + 1}</div>
+        <div class="merge-section-info">
+          <div class="merge-section-name">${typeLabels[s.type] || ""} ${s.name}</div>
+          <div class="merge-section-meta">
+            <span>BPM: ${bpm}</span>
+            <div class="merge-section-diff-tags">${tags}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderMergeGridSelects() {
+  const sections = state.sections || [];
+  const options = sections.map((s, i) =>
+    `<option value="${s.id}">${i + 1}. ${s.name}</option>`
+  ).join("");
+
+  mergeGridSectionSelect.innerHTML = options;
+}
+
+function renderMergeGrid() {
+  if (!mergeState || !mergeState.collabData) {
+    mergeGridCompareEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">请先选择协作文件</p>`;
+    return;
+  }
+
+  const sectionId = mergeGridSectionSelect.value;
+  if (!sectionId) {
+    mergeGridCompareEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">请选择段落</p>`;
+    return;
+  }
+
+  const ours = state.sections.find(s => s.id === sectionId);
+  const theirs = mergeState.collabData.sections.find(s => s.id === sectionId);
+
+  if (!ours && !theirs) {
+    mergeGridCompareEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">段落不存在</p>`;
+    return;
+  }
+
+  const section = ours || theirs;
+  const rows = 4;
+  const cols = getSectionSteps(section);
+
+  const ourPattern = ours?.pattern || [];
+  const theirPattern = theirs?.pattern || [];
+
+  const gridDiffs = mergeState.diffs.grid[sectionId] || [];
+  const diffMap = new Map();
+  gridDiffs.forEach(d => {
+    diffMap.set(`${d.row}_${d.col}`, d);
+  });
+
+  let html = `<div class="merge-compare-header">
+    <div class="merge-compare-side current">当前版本</div>
+    <div class="merge-compare-arrow">↔</div>
+    <div class="merge-compare-side collab">协作版本</div>
+  </div>`;
+
+  html += `<table class="merge-grid-table"><thead><tr><th class="label-cell">声部</th>`;
+  for (let c = 0; c < cols; c++) {
+    html += `<th>${c + 1}</th>`;
+  }
+  html += `</tr></thead><tbody>`;
+
+  for (let r = 0; r < rows; r++) {
+    const instName = instruments[r]?.name || `声部${r + 1}`;
+    html += `<tr><td class="merge-grid-row-label">${instName}</td>`;
+
+    for (let c = 0; c < cols; c++) {
+      const ourVal = ourPattern[r]?.[c] || "";
+      const theirVal = theirPattern[r]?.[c] || "";
+      const diff = diffMap.get(`${r}_${c}`);
+
+      let cellClass = "grid-diff-same";
+      let displayVal = ourVal;
+
+      if (diff) {
+        if (diff.type === "add") {
+          cellClass = "grid-diff-add";
+          displayVal = theirVal;
+        } else if (diff.type === "del") {
+          cellClass = "grid-diff-del";
+          displayVal = ourVal;
+        } else if (diff.type === "mod") {
+          cellClass = "grid-diff-both";
+          displayVal = `${ourVal}→${theirVal}`;
+        }
+      }
+
+      html += `<td class="${cellClass}" title="当前: ${ourVal || '(空)'} | 协作: ${theirVal || '(空)'}">${displayVal || "&nbsp;"}</td>`;
+    }
+
+    html += `</tr>`;
+  }
+
+  html += `</tbody></table>`;
+
+  if (gridDiffs.length > 0) {
+    html += `<div style="margin-top: 12px; padding: 10px; background: var(--panel); border-radius: 6px; font-size: 12px; color: var(--muted);">
+      <strong>差异说明：</strong> 共 ${gridDiffs.length} 处差异
+      <span style="margin-left: 12px;"><span class="merge-badge merge-badge-add">绿色</span> 协作新增</span>
+      <span style="margin-left: 8px;"><span class="merge-badge merge-badge-del">红色</span> 当前独有</span>
+      <span style="margin-left: 8px;"><span class="merge-badge merge-badge-conflict">黄色</span> 冲突</span>
+    </div>`;
+  }
+
+  mergeGridCompareEl.innerHTML = html;
+}
+
+function renderMergeSections() {
+  if (!mergeState || !mergeState.collabData) {
+    mergeSectionsListEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">请先选择协作文件</p>`;
+    return;
+  }
+
+  const sections = state.sections || [];
+
+  mergeSectionsListEl.innerHTML = sections.map((section, idx) => {
+    const bpmDiffs = mergeState.diffs.bpm[section.id] || [];
+    const hasDiff = bpmDiffs.length > 0;
+
+    const diffFields = bpmDiffs.map(d => `
+      <div class="merge-field-diff">
+        <span class="merge-field-label">${getBPMFieldLabel(d.field)}</span>
+        <span class="merge-field-val current">${d.ours ?? '(空)'}</span>
+        <span style="color: var(--muted);">→</span>
+        <span class="merge-field-val collab">${d.theirs ?? '(空)'}</span>
+      </div>
+    `).join("");
+
+    return `
+      <div class="merge-section-diff-card">
+        <div class="merge-section-diff-card-header">
+          <span class="merge-section-diff-title">${idx + 1}. ${section.name}</span>
+          ${hasDiff
+            ? `<span class="merge-badge merge-badge-mod">${bpmDiffs.length} 处改动</span>`
+            : `<span class="merge-badge merge-badge-add" style="background:#f3f4f6;color:#6b7280;border-color:#d1d5db;">无差异</span>`
+          }
+        </div>
+        <div class="merge-section-diff-body">
+          ${hasDiff ? diffFields : `<p style="margin:0;color:var(--muted);font-size:13px;">该段落的所有配置完全一致</p>`}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderMergeVoiceSelects() {
+  const sections = state.sections || [];
+  const options = sections.map((s, i) =>
+    `<option value="${s.id}">${i + 1}. ${s.name}</option>`
+  ).join("");
+  mergeVoiceSectionSelect.innerHTML = options;
+}
+
+function renderMergeVoices() {
+  if (!mergeState || !mergeState.collabData) {
+    mergeVoiceCompareEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">请先选择协作文件</p>`;
+    return;
+  }
+
+  const sectionId = mergeVoiceSectionSelect.value;
+  if (!sectionId) {
+    mergeVoiceCompareEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">请选择段落</p>`;
+    return;
+  }
+
+  const ours = state.sections.find(s => s.id === sectionId);
+  const theirs = mergeState.collabData.sections.find(s => s.id === sectionId);
+
+  if (!ours || !theirs) {
+    mergeVoiceCompareEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">段落不存在</p>`;
+    return;
+  }
+
+  const ourVoices = ours.enabledInstruments || [true, true, true, true];
+  const theirVoices = theirs.enabledInstruments || [true, true, true, true];
+
+  let html = `<div class="merge-compare-header">
+    <div class="merge-compare-side current">当前版本</div>
+    <div class="merge-compare-arrow">↔</div>
+    <div class="merge-compare-side collab">协作版本</div>
+  </div>`;
+
+  for (let i = 0; i < 4; i++) {
+    const inst = instruments[i];
+    const ourOn = ourVoices[i];
+    const theirOn = theirVoices[i];
+    const hasDiff = ourOn !== theirOn;
+
+    const voiceIcons = ["🔔", "🥁", "🎺", "🎵"];
+    html += `
+      <div class="merge-voice-row" style="${hasDiff ? 'border-color: #fde68a; background: #fffbeb;' : ''}">
+        <span class="merge-voice-name">${voiceIcons[i] || ""} ${inst.name}</span>
+        <span class="merge-voice-state ${ourOn ? 'on' : 'off'}">${ourOn ? '开启' : '关闭'}</span>
+        <span style="color: var(--muted);">${hasDiff ? '⚡' : '='}</span>
+        <span class="merge-voice-state ${theirOn ? 'on' : 'off'}">${theirOn ? '开启' : '关闭'}</span>
+      </div>
+    `;
+  }
+
+  const voiceDiffs = mergeState.diffs.voices[sectionId] || [];
+  if (voiceDiffs.length > 0) {
+    html += `<div style="margin-top: 12px; padding: 10px; background: var(--panel); border-radius: 6px; font-size: 12px; color: var(--muted);">
+      共 ${voiceDiffs.length} 个声部的开关状态不同
+    </div>`;
+  }
+
+  mergeVoiceCompareEl.innerHTML = html;
+}
+
+function renderMergeNoteSelects() {
+  const sections = state.sections || [];
+  const options = sections.map((s, i) =>
+    `<option value="${s.id}">${i + 1}. ${s.name}</option>`
+  ).join("");
+  mergeNoteSectionSelect.innerHTML = options;
+}
+
+function renderMergeNotes() {
+  if (!mergeState || !mergeState.collabData) {
+    mergeNotesCompareEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">请先选择协作文件</p>`;
+    return;
+  }
+
+  const sectionId = mergeNoteSectionSelect.value;
+  if (!sectionId) {
+    mergeNotesCompareEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">请选择段落</p>`;
+    return;
+  }
+
+  const noteDiffs = mergeState.diffs.notes[sectionId] || [];
+
+  if (noteDiffs.length === 0) {
+    mergeNotesCompareEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">暂无批注</p>`;
+    return;
+  }
+
+  const typeLabels = {
+    add: `<span class="merge-note-type-badge add">新增</span>`,
+    del: `<span class="merge-note-type-badge del">删除</span>`,
+    same: `<span class="merge-note-type-badge same">相同</span>`,
+    mod: `<span class="merge-note-type-badge conflict">冲突</span>`
+  };
+
+  mergeNotesCompareEl.innerHTML = noteDiffs.map(diff => {
+    const ourText = diff.ours?.text || "";
+    const theirText = diff.theirs?.text || "";
+
+    return `
+      <div class="merge-note-item">
+        <div class="merge-note-side current ${!ourText ? 'empty' : ''}">
+          ${ourText || '(空)'}
+        </div>
+        <div class="merge-note-action">
+          ${typeLabels[diff.type] || ''}
+        </div>
+        <div class="merge-note-side collab ${!theirText ? 'empty' : ''}">
+          ${theirText || '(空)'}
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderMergePractice() {
+  if (!mergeState || !mergeState.collabData) {
+    mergePracticeCompareEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">请先选择协作文件</p>`;
+    return;
+  }
+
+  const practiceDiffs = mergeState.diffs.practice || [];
+
+  const ourCount = rehearsalLog?.length || 0;
+  const theirCount = mergeState.collabRehearsalLog?.length || 0;
+  const addCount = practiceDiffs.filter(p => p.type === "add").length;
+  const sameCount = practiceDiffs.filter(p => p.type === "same").length;
+
+  let html = `
+    <div class="merge-practice-section">
+      <h4>📊 练习记录统计</h4>
+      <div class="merge-practice-stats">
+        <div class="merge-practice-stat">
+          <div class="merge-practice-stat-label">当前版本</div>
+          <div class="merge-practice-stat-value">${ourCount}</div>
+        </div>
+        <div class="merge-practice-stat">
+          <div class="merge-practice-stat-label">协作版本</div>
+          <div class="merge-practice-stat-value">${theirCount}</div>
+        </div>
+        <div class="merge-practice-stat">
+          <div class="merge-practice-stat-label">协作新增</div>
+          <div class="merge-practice-stat-value" style="color: var(--active);">${addCount}</div>
+        </div>
+      </div>
+      <p style="margin: 0; font-size: 12px; color: var(--muted);">
+        相同记录: ${sameCount} 条 | 
+        <span class="merge-badge merge-badge-add">绿色</span> 协作版本新增的记录
+      </p>
+    </div>
+  `;
+
+  const addItems = practiceDiffs.filter(p => p.type === "add");
+  if (addItems.length > 0) {
+    html += `
+      <div class="merge-practice-section">
+        <h4>➕ 协作版本新增的练习记录</h4>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+    `;
+
+    addItems.slice(0, 10).forEach(item => {
+      const entry = item.theirs;
+      const date = entry.timestamp ? new Date(entry.timestamp).toLocaleString("zh-CN") : "未知时间";
+      html += `
+        <div style="padding: 8px 12px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 6px; font-size: 12px;">
+          <strong style="color: #047857;">${entry.sectionName || "未知段落"}</strong>
+          <span style="color: var(--muted); margin-left: 8px;">${date}</span>
+        </div>
+      `;
+    });
+
+    if (addItems.length > 10) {
+      html += `<p style="margin: 0; font-size: 12px; color: var(--muted); text-align: center;">还有 ${addItems.length - 10} 条...</p>`;
+    }
+
+    html += `</div></div>`;
+  }
+
+  mergePracticeCompareEl.innerHTML = html;
+}
+
+function renderMergeConflicts() {
+  if (!mergeState || !mergeState.collabData) {
+    mergeConflictListEl.innerHTML = `<p style="color: var(--muted); text-align: center; padding: 20px;">请先选择协作文件</p>`;
+    mergeConflictProgressEl.textContent = "0 / 0";
+    return;
+  }
+
+  const conflicts = mergeState.conflicts || [];
+
+  if (conflicts.length === 0) {
+    mergeConflictListEl.innerHTML = `
+      <div style="text-align:center; padding: 40px 20px; color: var(--muted);">
+        <div style="font-size: 48px; margin-bottom: 12px;">🎉</div>
+        <p style="margin: 0 0 8px; font-weight: 600; color: #047857;">太棒了！没有冲突</p>
+        <p style="margin: 0; font-size: 12px;">两个版本没有需要人工处理的冲突，可直接自动合并</p>
+      </div>
+    `;
+    mergeConflictProgressEl.textContent = "0 / 0";
+    return;
+  }
+
+  const resolvedCount = Object.keys(mergeState.resolvedConflicts).length;
+  mergeConflictProgressEl.textContent = `${resolvedCount} / ${conflicts.length}`;
+
+  mergePrevConflictBtn.disabled = currentConflictIndex <= 0;
+  mergeNextConflictBtn.disabled = currentConflictIndex >= conflicts.length - 1;
+
+  mergeConflictListEl.innerHTML = conflicts.map((conflict, idx) => {
+    const resolved = !!mergeState.resolvedConflicts[conflict.id];
+    const resolution = mergeState.resolvedConflicts[conflict.id];
+
+    let conflictContent = "";
+
+    if (conflict.type === "section_add") {
+      conflictContent = `
+        <div class="merge-conflict-compare">
+          <div class="merge-conflict-side current">
+            <div class="merge-conflict-side-label">当前版本</div>
+            <div style="color: var(--muted); font-style: italic;">（无此段落）</div>
+          </div>
+          <div class="merge-conflict-arrow">➕</div>
+          <div class="merge-conflict-side collab">
+            <div class="merge-conflict-side-label">协作版本</div>
+            <div><strong>${conflict.sectionName || '新段落'}</strong></div>
+          </div>
+        </div>
+      `;
+    } else if (conflict.type === "section_del") {
+      conflictContent = `
+        <div class="merge-conflict-compare">
+          <div class="merge-conflict-side current">
+            <div class="merge-conflict-side-label">当前版本</div>
+            <div><strong>${conflict.sectionName || '段落'}</strong></div>
+          </div>
+          <div class="merge-conflict-arrow">🗑️</div>
+          <div class="merge-conflict-side collab">
+            <div class="merge-conflict-side-label">协作版本</div>
+            <div style="color: var(--muted); font-style: italic;">（已删除）</div>
+          </div>
+        </div>
+      `;
+    } else if (conflict.type === "bpm") {
+      conflictContent = `
+        <div class="merge-conflict-compare">
+          <div class="merge-conflict-side current">
+            <div class="merge-conflict-side-label">当前版本</div>
+            <div style="font-size: 18px; font-weight: 700;">${conflict.ours ?? '(空)'}</div>
+          </div>
+          <div class="merge-conflict-arrow">⚡</div>
+          <div class="merge-conflict-side collab">
+            <div class="merge-conflict-side-label">协作版本</div>
+            <div style="font-size: 18px; font-weight: 700;">${conflict.theirs ?? '(空)'}</div>
+          </div>
+        </div>
+      `;
+    } else if (conflict.type === "grid") {
+      const diffs = conflict.gridDiffs || [];
+      conflictContent = `
+        <div style="margin-bottom: 12px;">
+          <p style="margin: 0 0 8px; font-size: 13px; color: var(--muted);">
+            共 ${diffs.length} 处谱面格子差异
+          </p>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px;">
+            <span class="merge-badge merge-badge-add">新增 ${diffs.filter(d => d.type === 'add').length}</span>
+            <span class="merge-badge merge-badge-del">删除 ${diffs.filter(d => d.type === 'del').length}</span>
+            <span class="merge-badge merge-badge-conflict">改动 ${diffs.filter(d => d.type === 'mod').length}</span>
+          </div>
+        </div>
+      `;
+    } else if (conflict.type === "voices") {
+      const diffs = conflict.voiceDiffs || [];
+      conflictContent = `
+        <div style="margin-bottom: 12px;">
+          <p style="margin: 0 0 8px; font-size: 13px; color: var(--muted);">
+            共 ${diffs.length} 个声部开关不同
+          </p>
+          <div style="display: flex; flex-direction: column; gap: 4px; font-size: 12px;">
+            ${diffs.map(d => `
+              <div style="display: flex; justify-content: space-between; padding: 4px 8px; background: var(--panel); border-radius: 4px;">
+                <span>${d.name}</span>
+                <span>
+                  <span style="color: #1d4ed8;">${d.ours ? '开' : '关'}</span>
+                  →
+                  <span style="color: #047857;">${d.theirs ? '开' : '关'}</span>
+                </span>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    } else if (conflict.type === "note_mod") {
+      conflictContent = `
+        <div class="merge-conflict-compare">
+          <div class="merge-conflict-side current">
+            <div class="merge-conflict-side-label">当前版本</div>
+            <div>${conflict.ours?.text || '(空)'}</div>
+          </div>
+          <div class="merge-conflict-arrow">⚡</div>
+          <div class="merge-conflict-side collab">
+            <div class="merge-conflict-side-label">协作版本</div>
+            <div>${conflict.theirs?.text || '(空)'}</div>
+          </div>
+        </div>
+      `;
+    } else if (conflict.type === "note_add") {
+      conflictContent = `
+        <div class="merge-conflict-compare">
+          <div class="merge-conflict-side current">
+            <div class="merge-conflict-side-label">当前版本</div>
+            <div style="color: var(--muted); font-style: italic;">（无此批注）</div>
+          </div>
+          <div class="merge-conflict-arrow">➕</div>
+          <div class="merge-conflict-side collab">
+            <div class="merge-conflict-side-label">协作版本</div>
+            <div>${conflict.theirs?.text || '(空)'}</div>
+          </div>
+        </div>
+      `;
+    } else if (conflict.type === "note_del") {
+      conflictContent = `
+        <div class="merge-conflict-compare">
+          <div class="merge-conflict-side current">
+            <div class="merge-conflict-side-label">当前版本</div>
+            <div>${conflict.ours?.text || '(空)'}</div>
+          </div>
+          <div class="merge-conflict-arrow">🗑️</div>
+          <div class="merge-conflict-side collab">
+            <div class="merge-conflict-side-label">协作版本</div>
+            <div style="color: var(--muted); font-style: italic;">（已删除）</div>
+          </div>
+        </div>
+      `;
+    } else if (conflict.type === "practice_add") {
+      const entry = conflict.theirs || {};
+      const date = entry.timestamp ? new Date(entry.timestamp).toLocaleString("zh-CN") : "未知时间";
+      conflictContent = `
+        <div class="merge-conflict-compare">
+          <div class="merge-conflict-side current">
+            <div class="merge-conflict-side-label">当前版本</div>
+            <div style="color: var(--muted); font-style: italic;">（无此记录）</div>
+          </div>
+          <div class="merge-conflict-arrow">➕</div>
+          <div class="merge-conflict-side collab">
+            <div class="merge-conflict-side-label">协作版本</div>
+            <div><strong>${entry.sectionName || "未知段落"}</strong></div>
+            <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">${date}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    const isSelectedOurs = resolution === "ours";
+    const isSelectedTheirs = resolution === "theirs";
+
+    return `
+      <div class="merge-conflict-item ${resolved ? 'resolved' : ''}" data-conflict-idx="${idx}">
+        <div class="merge-conflict-item-header">
+          <span class="merge-conflict-type">
+            <span class="merge-diff-icon">${resolved ? '✅' : '⚠️'}</span>
+            冲突 ${idx + 1}: ${conflict.description}
+          </span>
+          <span class="merge-conflict-status">${resolved ? '已解决' : '待处理'}</span>
+        </div>
+        <div class="merge-conflict-body">
+          ${conflictContent}
+          <div class="merge-conflict-choices">
+            <button type="button" class="merge-conflict-choice keep-current ${isSelectedOurs ? 'selected' : ''}"
+              onclick="resolveConflict('${conflict.id}', 'ours')">
+              保留当前版本
+            </button>
+            <button type="button" class="merge-conflict-choice keep-collab ${isSelectedTheirs ? 'selected' : ''}"
+              onclick="resolveConflict('${conflict.id}', 'theirs')">
+              采用协作版本
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function scrollToConflict(idx) {
+  const el = mergeConflictListEl.querySelector(`[data-conflict-idx="${idx}"]`);
+  if (el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.style.boxShadow = "0 0 0 3px rgba(245, 158, 11, 0.3)";
+    setTimeout(() => {
+      el.style.boxShadow = "";
+    }, 1500);
+  }
+}
+
+mergeCloseBtn.addEventListener("click", closeMergeModal);
+mergeCancelBtn.addEventListener("click", closeMergeModal);
+
+mergeOverlay.addEventListener("click", (e) => {
+  if (e.target === mergeOverlay) {
+    closeMergeModal();
+  }
+});
+
+schemeMergeFileInput.addEventListener("change", handleMergeFileSelect);
+
+document.getElementById("schemeMergeBtn").addEventListener("click", () => {
+  openMergeModal();
+  setTimeout(() => schemeMergeFileInput.click(), 300);
+});
+
+document.querySelectorAll(".merge-tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    const tabName = tab.dataset.mergeTab;
+
+    document.querySelectorAll(".merge-tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".merge-tab-content").forEach(c => c.classList.remove("active"));
+
+    tab.classList.add("active");
+    const content = document.querySelector(`[data-merge-tab-content="${tabName}"]`);
+    if (content) content.classList.add("active");
+  });
+});
+
+mergeGridSectionSelect.addEventListener("change", renderMergeGrid);
+mergeVoiceSectionSelect.addEventListener("change", renderMergeVoices);
+mergeNoteSectionSelect.addEventListener("change", renderMergeNotes);
+
+mergeAutoMergeBtn.addEventListener("click", () => {
+  if (!mergeState || !mergeState.collabData) {
+    alert("请先选择协作文件");
+    return;
+  }
+  applyAutoMerge();
+  alert("自动合并完成！请检查冲突项，然后可预览或应用合并结果。");
+});
+
+mergePreviewBtn.addEventListener("click", () => {
+  if (mergePreviewActive) {
+    exitMergePreview();
+  } else {
+    enterMergePreview();
+  }
+});
+
+mergeExitPreviewBtn.addEventListener("click", exitMergePreview);
+
+mergeApplyBtn.addEventListener("click", () => {
+  if (confirm("确定要应用合并结果吗？此操作会覆盖当前方案，建议先导出备份。")) {
+    applyMergeResult();
+  }
+});
+
+mergeExportBtn.addEventListener("click", exportMergeResult);
+
+mergePrevConflictBtn.addEventListener("click", () => {
+  if (currentConflictIndex > 0) {
+    currentConflictIndex--;
+    scrollToConflict(currentConflictIndex);
+    mergeConflictProgressEl.textContent = `${currentConflictIndex + 1} / ${mergeState.conflicts.length}`;
+    mergePrevConflictBtn.disabled = currentConflictIndex <= 0;
+    mergeNextConflictBtn.disabled = currentConflictIndex >= mergeState.conflicts.length - 1;
+  }
+});
+
+mergeNextConflictBtn.addEventListener("click", () => {
+  if (mergeState && mergeState.conflicts && currentConflictIndex < mergeState.conflicts.length - 1) {
+    currentConflictIndex++;
+    scrollToConflict(currentConflictIndex);
+    mergeConflictProgressEl.textContent = `${currentConflictIndex + 1} / ${mergeState.conflicts.length}`;
+    mergePrevConflictBtn.disabled = currentConflictIndex <= 0;
+    mergeNextConflictBtn.disabled = currentConflictIndex >= mergeState.conflicts.length - 1;
+  }
+});

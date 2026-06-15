@@ -180,6 +180,10 @@
             <input type="file" id="schemeFileInput" accept=".json,application/json" style="display:none;">
           </label>
           <button type="button" class="scheme-import-list-btn" id="schemeImportListBtn">💾 导入到已存方案列表</button>
+          <label class="scheme-merge-btn" id="schemeMergeBtn">
+            <span>🤝 协作合并导入</span>
+            <input type="file" id="schemeMergeFileInput" accept=".json,application/json" style="display:none;">
+          </label>
         </div>
         <div class="scheme-ie-error" id="schemeIeError" style="display: none;"></div>
         <div class="scheme-ie-preview" id="schemeIePreview" style="display: none;">
@@ -556,6 +560,134 @@
         <button type="button" class="vc-restore-selected-btn" id="vcRestoreSelectedBtn" disabled>↺ 恢复选中项</button>
         <button type="button" class="vc-restore-all-btn" id="vcRestoreAllBtn">🔄 整份覆盖恢复</button>
         <button type="button" class="vc-cancel-btn" id="vcCancelBtn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="merge-overlay" id="mergeOverlay" style="display:none;">
+    <div class="merge-modal">
+      <div class="merge-header">
+        <div>
+          <h2>🤝 离线协作合并</h2>
+          <p class="merge-subtitle" id="mergeSubtitle">对比协作版本与当前方案的差异，智能合并无冲突改动</p>
+        </div>
+        <button type="button" class="merge-close-btn" id="mergeCloseBtn">✕</button>
+      </div>
+
+      <div class="merge-stats" id="mergeStats">
+        <div class="merge-stat-item">
+          <span class="merge-stat-icon">📊</span>
+          <div>
+            <span class="merge-stat-label">总差异数</span>
+            <span class="merge-stat-value" id="mergeTotalDiffs">0</span>
+          </div>
+        </div>
+        <div class="merge-stat-item">
+          <span class="merge-stat-icon">✅</span>
+          <div>
+            <span class="merge-stat-label">可自动合并</span>
+            <span class="merge-stat-value merge-auto" id="mergeAutoDiffs">0</span>
+          </div>
+        </div>
+        <div class="merge-stat-item">
+          <span class="merge-stat-icon">⚠️</span>
+          <div>
+            <span class="merge-stat-label">需要人工处理</span>
+            <span class="merge-stat-value merge-conflict" id="mergeConflictDiffs">0</span>
+          </div>
+        </div>
+        <div class="merge-stat-item">
+          <span class="merge-stat-icon">📝</span>
+          <div>
+            <span class="merge-stat-label">已处理冲突</span>
+            <span class="merge-stat-value merge-resolved" id="mergeResolvedDiffs">0</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="merge-tabs" id="mergeTabs">
+        <button type="button" class="merge-tab active" data-merge-tab="overview">📋 概览</button>
+        <button type="button" class="merge-tab" data-merge-tab="grid">🎵 谱面格子</button>
+        <button type="button" class="merge-tab" data-merge-tab="sections">📑 段落与BPM</button>
+        <button type="button" class="merge-tab" data-merge-tab="voices">🎚️ 声部开关</button>
+        <button type="button" class="merge-tab" data-merge-tab="notes">📋 批注任务</button>
+        <button type="button" class="merge-tab" data-merge-tab="practice">📝 练习记录</button>
+        <button type="button" class="merge-tab" data-merge-tab="conflicts">⚔️ 冲突处理</button>
+      </div>
+
+      <div class="merge-body" id="mergeBody">
+        <div class="merge-tab-content active" data-merge-tab-content="overview">
+          <div class="merge-overview-intro">
+            <h3>合并说明</h3>
+            <p>系统将自动检测两个版本之间的差异：</p>
+            <ul>
+              <li><span class="merge-badge merge-badge-add">新增</span> 协作版本有但当前没有的内容</li>
+              <li><span class="merge-badge merge-badge-del">删除</span> 当前有但协作版本没有的内容</li>
+              <li><span class="merge-badge merge-badge-mod">修改</span> 两边都有但内容不同的项</li>
+              <li><span class="merge-badge merge-badge-conflict">冲突</span> 两边都修改了同一内容，需要人工决定</li>
+            </ul>
+            <p>无冲突的改动将自动合并，冲突项需要您逐项选择保留哪一方的版本。</p>
+          </div>
+          <div class="merge-section-list" id="mergeSectionList"></div>
+        </div>
+
+        <div class="merge-tab-content" data-merge-tab-content="grid">
+          <div class="merge-section-selector">
+            <label>选择段落：</label>
+            <select id="mergeGridSectionSelect"></select>
+          </div>
+          <div class="merge-grid-compare" id="mergeGridCompare"></div>
+        </div>
+
+        <div class="merge-tab-content" data-merge-tab-content="sections">
+          <div class="merge-sections-list" id="mergeSectionsList"></div>
+        </div>
+
+        <div class="merge-tab-content" data-merge-tab-content="voices">
+          <div class="merge-section-selector">
+            <label>选择段落：</label>
+            <select id="mergeVoiceSectionSelect"></select>
+          </div>
+          <div class="merge-voice-compare" id="mergeVoiceCompare"></div>
+        </div>
+
+        <div class="merge-tab-content" data-merge-tab-content="notes">
+          <div class="merge-section-selector">
+            <label>选择段落：</label>
+            <select id="mergeNoteSectionSelect"></select>
+          </div>
+          <div class="merge-notes-compare" id="mergeNotesCompare"></div>
+        </div>
+
+        <div class="merge-tab-content" data-merge-tab-content="practice">
+          <div class="merge-practice-compare" id="mergePracticeCompare"></div>
+        </div>
+
+        <div class="merge-tab-content" data-merge-tab-content="conflicts">
+          <div class="merge-conflict-header">
+            <h3>冲突列表</h3>
+            <div class="merge-conflict-actions">
+              <button type="button" class="merge-conflict-nav-btn" id="mergePrevConflictBtn">← 上一个</button>
+              <span id="mergeConflictProgress">0 / 0</span>
+              <button type="button" class="merge-conflict-nav-btn" id="mergeNextConflictBtn">下一个 →</button>
+            </div>
+          </div>
+          <div class="merge-conflict-list" id="mergeConflictList"></div>
+        </div>
+      </div>
+
+      <div class="merge-preview-bar" id="mergePreviewBar" style="display:none;">
+        <span class="merge-preview-label">👁️ 预览模式</span>
+        <span class="merge-preview-desc">当前显示的是合并后的预览效果</span>
+        <button type="button" class="merge-preview-toggle" id="mergeExitPreviewBtn">退出预览</button>
+      </div>
+
+      <div class="merge-footer">
+        <button type="button" class="merge-auto-merge-btn" id="mergeAutoMergeBtn">✨ 自动合并无冲突项</button>
+        <button type="button" class="merge-preview-btn" id="mergePreviewBtn" disabled>👁️ 预览合并结果</button>
+        <button type="button" class="merge-export-btn" id="mergeExportBtn" disabled>📤 导出合并结果</button>
+        <button type="button" class="merge-apply-btn" id="mergeApplyBtn" disabled>✓ 应用合并</button>
+        <button type="button" class="merge-cancel-btn" id="mergeCancelBtn">取消</button>
       </div>
     </div>
   </div>
