@@ -2829,8 +2829,24 @@ function tick() {
       if (nextIndex < state.sections.length) {
         currentPlaySectionIndex = nextIndex;
         continuousPlaySectionCount++;
-        playhead = currentRange(state.sections[nextIndex])[0];
         const nextSection = state.sections[nextIndex];
+        const [nextStart] = currentRange(nextSection);
+        playhead = nextStart;
+        if (currentRehearsalId) {
+          reviewState.prevBpm = nextSection.bpm;
+          reviewState.prevLoop = nextSection.loop;
+          reviewState.prevSectionId = nextSection.id;
+          reviewState.prevVoices = (nextSection.enabledInstruments || []).join(",");
+          reviewState.prevMixConfig = JSON.stringify(nextSection.mixConfig || createDefaultMixConfig());
+          addReviewEvent("section", {
+            fromId: section.id,
+            toId: nextSection.id,
+            toName: nextSection.name,
+            continuousSectionIndex: nextIndex,
+            totalSections: state.sections.length
+          }, nextSection, playhead);
+          checkAndRecordChanges(nextSection, playhead);
+        }
         if (nextSection.bpm !== section.bpm) {
           clearInterval(timer);
           timer = setInterval(tick, 60000 / nextSection.bpm);
@@ -2894,8 +2910,6 @@ function startPlayback() {
   }
 
   save();
-  tick();
-  timer = setInterval(tick, 60000 / section.bpm);
 
   currentRehearsalId = crypto.randomUUID();
   currentRehearsalStartTime = Date.now();
@@ -2910,11 +2924,16 @@ function startPlayback() {
     .map((i) => i.name);
   const loopLabel = section.loop === "" ? "全段" : `第${Number(section.loop) + 1}小节`;
   section.mixConfig = section.mixConfig || createDefaultMixConfig();
+  const startingBeat = playhead;
   addReviewEvent("start", {
     mode: state.continuousPlay ? "continuous" : "normal",
     initialBpm: section.bpm,
     initialLoop: loopLabel
-  }, section, playhead);
+  }, section, startingBeat);
+  checkAndRecordChanges(section, startingBeat);
+
+  tick();
+  timer = setInterval(tick, 60000 / section.bpm);
   rehearsalLog.unshift({
     id: currentRehearsalId,
     timestamp: new Date().toISOString(),
@@ -4986,12 +5005,14 @@ function startTempoTrainer() {
     .map((i) => i.name);
   const loopLabel = tempoTrainer.originalLoop === "" ? "全段" : `第${Number(tempoTrainer.originalLoop) + 1}小节`;
   section.mixConfig = section.mixConfig || createDefaultMixConfig();
+  const startingBeat = playhead;
   addReviewEvent("start", {
     mode: "tempo",
     initialBpm: tempoTrainer.bpmSteps[0],
     bpmSteps: [...tempoTrainer.bpmSteps],
     totalRounds: tempoTrainer.totalRounds
-  }, section, playhead);
+  }, section, startingBeat);
+  checkAndRecordChanges(section, startingBeat);
   rehearsalLog.unshift({
     id: currentRehearsalId,
     timestamp: new Date().toISOString(),
@@ -5084,6 +5105,7 @@ function tempoTrainerTick() {
           tempoStep: true,
           bpmIndex: tempoTrainer.currentBpmIndex
         }, section, start);
+        reviewState.prevBpm = nextBpm;
       }
       section.bpm = nextBpm;
       bpmInput.value = nextBpm;
@@ -5099,6 +5121,9 @@ function tempoTrainerTick() {
       tempoTrainer.pauseTimer = setTimeout(() => {
         tempoTrainer.pausing = false;
         playhead = start;
+        if (currentRehearsalId) {
+          checkAndRecordChanges(getCurrentSection(), playhead);
+        }
         updateTempoStatusDisplay();
         timer = setInterval(tempoTrainerTick, 60000 / section.bpm);
         tempoTrainerTick();
@@ -5107,6 +5132,9 @@ function tempoTrainerTick() {
     }
 
     playhead = start;
+    if (currentRehearsalId) {
+      checkAndRecordChanges(section, playhead);
+    }
   } else {
     playhead = playhead + 1;
   }
