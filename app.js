@@ -2845,6 +2845,8 @@ function tick() {
             continuousSectionIndex: nextIndex,
             totalSections: state.sections.length
           }, nextSection, playhead);
+          addReviewEvent("snapshot", { sectionStart: true }, nextSection, playhead);
+          reviewState.lastBeatSnapshot = playhead;
           checkAndRecordChanges(nextSection, playhead);
         }
         if (nextSection.bpm !== section.bpm) {
