@@ -3053,6 +3053,11 @@ continuousPlayCheckbox.addEventListener("change", () => {
     alert("变速训练进行中，无法切换连续播放。请先停止训练。");
     return;
   }
+  if (diagnosisMode || diagnosisActive) {
+    continuousPlayCheckbox.checked = state.continuousPlay;
+    alert("诊断模式已开启，无法使用连续播放。请先关闭诊断模式。");
+    return;
+  }
   state.continuousPlay = continuousPlayCheckbox.checked;
   if (timer) {
     stopPlayback();
@@ -3738,6 +3743,11 @@ function createEmptyWeaknessProfile() {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     sections: {},
+    migrationState: {
+      oldDiagnosisMigrated: false,
+      lastDiagnosisMigratedAt: null,
+      migratedDiagnosisTimestamps: []
+    },
     globalStats: {
       totalDiagnoses: 0,
       totalCorrect: 0,
@@ -3809,6 +3819,24 @@ function migrateOldDiagnosisToWeaknessProfile() {
   const section = getCurrentSection();
   if (!section) return false;
 
+  if (!weaknessProfile) {
+    weaknessProfile = createEmptyWeaknessProfile();
+    weaknessProfileLoaded = true;
+  }
+
+  if (!weaknessProfile.migrationState) {
+    weaknessProfile.migrationState = {
+      oldDiagnosisMigrated: false,
+      lastDiagnosisMigratedAt: null,
+      migratedDiagnosisTimestamps: []
+    };
+  }
+
+  const resultTimestamp = lastDiagnosisResult.timestamp || new Date().toISOString();
+  if (weaknessProfile.migrationState.migratedDiagnosisTimestamps.includes(resultTimestamp)) {
+    return false;
+  }
+
   const sectionWeakness = ensureSectionWeakness(section);
   let migrated = 0;
 
@@ -3844,26 +3872,59 @@ function migrateOldDiagnosisToWeaknessProfile() {
           label: item.label
         };
         migrated++;
+      } else {
+        const existing = sectionWeakness.confusedPairs[pairKey];
+        if (!existing.lastWrongAt || new Date(item.lastWrongAt || lastDiagnosisResult.timestamp) > new Date(existing.lastWrongAt)) {
+          existing.count = Math.max(existing.count, item.count);
+          existing.lastWrongAt = lastDiagnosisResult.timestamp;
+        }
+        migrated++;
       }
     });
   }
 
-  sectionWeakness.stats.totalQuestions = lastDiagnosisResult.answered || 0;
-  sectionWeakness.stats.totalCorrect = lastDiagnosisResult.correct || 0;
-  sectionWeakness.stats.totalWrong = lastDiagnosisResult.wrong || 0;
-  sectionWeakness.stats.lastDiagnosedAt = lastDiagnosisResult.timestamp;
+  if (!sectionWeakness.stats.lastDiagnosedAt || 
+      new Date(lastDiagnosisResult.timestamp) > new Date(sectionWeakness.stats.lastDiagnosedAt)) {
+    sectionWeakness.stats.totalQuestions = Math.max(
+      sectionWeakness.stats.totalQuestions,
+      lastDiagnosisResult.answered || 0
+    );
+    sectionWeakness.stats.totalCorrect = Math.max(
+      sectionWeakness.stats.totalCorrect,
+      lastDiagnosisResult.correct || 0
+    );
+    sectionWeakness.stats.totalWrong = Math.max(
+      sectionWeakness.stats.totalWrong,
+      lastDiagnosisResult.wrong || 0
+    );
+    sectionWeakness.stats.lastDiagnosedAt = lastDiagnosisResult.timestamp;
+  }
 
   if (weaknessProfile.globalStats) {
-    weaknessProfile.globalStats.totalDiagnoses = Math.max(weaknessProfile.globalStats.totalDiagnoses, 1);
-    weaknessProfile.globalStats.totalQuestions += lastDiagnosisResult.answered || 0;
-    weaknessProfile.globalStats.totalCorrect += lastDiagnosisResult.correct || 0;
-    weaknessProfile.globalStats.totalWrong += lastDiagnosisResult.wrong || 0;
+    weaknessProfile.globalStats.totalDiagnoses = Math.max(
+      weaknessProfile.globalStats.totalDiagnoses,
+      1
+    );
+    weaknessProfile.globalStats.totalQuestions = Math.max(
+      weaknessProfile.globalStats.totalQuestions,
+      lastDiagnosisResult.answered || 0
+    );
+    weaknessProfile.globalStats.totalCorrect = Math.max(
+      weaknessProfile.globalStats.totalCorrect,
+      lastDiagnosisResult.correct || 0
+    );
+    weaknessProfile.globalStats.totalWrong = Math.max(
+      weaknessProfile.globalStats.totalWrong,
+      lastDiagnosisResult.wrong || 0
+    );
   }
 
-  if (migrated > 0) {
-    saveWeaknessProfile();
-  }
-  return migrated > 0;
+  weaknessProfile.migrationState.oldDiagnosisMigrated = true;
+  weaknessProfile.migrationState.lastDiagnosisMigratedAt = new Date().toISOString();
+  weaknessProfile.migrationState.migratedDiagnosisTimestamps.push(resultTimestamp);
+
+  const saved = saveWeaknessProfile();
+  return migrated > 0 && saved;
 }
 
 function updateWeaknessAfterAnswer(step, correct, userAnswer, correctAnswer) {
@@ -5097,7 +5158,7 @@ function startDiagnosis() {
 
   if (!weaknessProfileLoaded) {
     loadWeaknessProfile();
-    if (!weaknessProfile) {
+    if (lastDiagnosisResult) {
       migrateOldDiagnosisToWeaknessProfile();
     }
   }
@@ -5377,7 +5438,7 @@ diagnosisAnswerButtons.addEventListener("click", (event) => {
 
 loadLastDiagnosisResult();
 loadWeaknessProfile();
-if (!weaknessProfile && lastDiagnosisResult) {
+if (lastDiagnosisResult) {
   migrateOldDiagnosisToWeaknessProfile();
 }
 
@@ -5835,7 +5896,7 @@ function generateTasksFromDiagnosis() {
 
   if (!weaknessProfileLoaded) {
     loadWeaknessProfile();
-    if (!weaknessProfile && lastDiagnosisResult) {
+    if (lastDiagnosisResult) {
       migrateOldDiagnosisToWeaknessProfile();
     }
   }
