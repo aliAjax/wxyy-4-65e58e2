@@ -258,6 +258,27 @@
             <div class="stat-label">累计播放</div>
           </div>
         </div>
+        <div class="dashboard-card weakness-card">
+          <div class="card-label">薄弱点画像</div>
+          <div class="weakness-summary" id="weaknessSummary">
+            <div class="weakness-overall" id="weaknessOverall">暂无数据</div>
+          </div>
+          <div class="weakness-stats">
+            <div class="weakness-stat">
+              <span class="weakness-stat-num" id="weaknessAccuracy">—</span>
+              <span class="weakness-stat-label">诊断正确率</span>
+            </div>
+            <div class="weakness-stat">
+              <span class="weakness-stat-num" id="weaknessWrongCount">0</span>
+              <span class="weakness-stat-label">易错拍点</span>
+            </div>
+            <div class="weakness-stat">
+              <span class="weakness-stat-num" id="weaknessConfusedCount">0</span>
+              <span class="weakness-stat-label">混淆乐器</span>
+            </div>
+          </div>
+          <div class="weakness-top-list" id="weaknessTopList"></div>
+        </div>
         <div class="dashboard-card focus-card">
           <div class="card-label">重点小节</div>
           <div class="focus-list" id="focusList"></div>
@@ -299,16 +320,18 @@
 
     <section class="diagnosis-panel" id="diagnosisPanel" style="display: none;">
       <div class="diagnosis-header">
-        <h2>🎯 错拍诊断练习</h2>
+        <h2>🎯 自适应错拍诊断</h2>
         <div class="diagnosis-controls">
           <label class="diagnosis-difficulty">
-            难度：
+            模式：
             <select id="diagnosisDifficulty">
+              <option value="adaptive" selected>自适应（推荐）</option>
               <option value="easy">简单（隐藏20%）</option>
-              <option value="medium" selected>中等（隐藏40%）</option>
+              <option value="medium">中等（隐藏40%）</option>
               <option value="hard">困难（隐藏60%）</option>
             </select>
           </label>
+          <span class="adaptive-hint" id="adaptiveHint">💡 结合历史错拍、混淆乐器、批注、暂停位置和复杂度智能出题</span>
           <button type="button" id="diagnosisStartBtn" class="diagnosis-start-btn">开始练习</button>
           <button type="button" id="diagnosisStopBtn" class="diagnosis-stop-btn" style="display: none;">结束练习</button>
           <button type="button" id="diagnosisCloseBtn" class="diagnosis-close-btn">关闭</button>
@@ -321,6 +344,10 @@
             <span class="diagnosis-info-value" id="diagnosisStatus">准备就绪</span>
           </div>
           <div class="diagnosis-info-item">
+            <span class="diagnosis-info-label">总题数</span>
+            <span class="diagnosis-info-value" id="diagnosisTotal">0</span>
+          </div>
+          <div class="diagnosis-info-item">
             <span class="diagnosis-info-label">已答题数</span>
             <span class="diagnosis-info-value" id="diagnosisAnswered">0</span>
           </div>
@@ -331,6 +358,10 @@
           <div class="diagnosis-info-item">
             <span class="diagnosis-info-label">正确率</span>
             <span class="diagnosis-info-value" id="diagnosisAccuracy">—</span>
+          </div>
+          <div class="diagnosis-info-item">
+            <span class="diagnosis-info-label">薄弱点覆盖</span>
+            <span class="diagnosis-info-value" id="diagnosisCoverage">—</span>
           </div>
         </div>
         <div class="diagnosis-answer-panel" id="diagnosisAnswerPanel" style="display: none;">

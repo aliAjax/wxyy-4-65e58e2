@@ -879,7 +879,7 @@ select {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: 1.1fr 1fr 1.1fr 1.3fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 12px;
 }
 
@@ -1114,6 +1114,121 @@ select {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.weakness-card {
+  gap: 8px;
+}
+
+.weakness-summary {
+  margin-bottom: 4px;
+}
+
+.weakness-overall {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+
+.weakness-overall.weakness-high {
+  color: #d9444e;
+}
+
+.weakness-overall.weakness-medium {
+  color: #e6a23c;
+}
+
+.weakness-overall.weakness-low {
+  color: #67c23a;
+}
+
+.weakness-overall.weakness-none {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.weakness-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #eadcc9;
+}
+
+.weakness-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 4px 0;
+  border-right: 1px dashed #eadcc9;
+}
+
+.weakness-stat:last-child {
+  border-right: 0;
+}
+
+.weakness-stat-num {
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.weakness-stat-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+  font-weight: 500;
+}
+
+.weakness-top-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.weakness-top-title {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.weakness-top-item {
+  display: inline-block;
+  font-size: 12px;
+  padding: 3px 8px;
+  background: #fef0f0;
+  color: #d9444e;
+  border-radius: 4px;
+  margin-right: 4px;
+  margin-bottom: 4px;
+  border: 1px solid #fbc4c4;
+}
+
+.weakness-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.adaptive-hint {
+  font-size: 12px;
+  color: var(--muted);
+  background: #f0f8f6;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid #c9e2de;
 }
 
 .last-play .play-status {

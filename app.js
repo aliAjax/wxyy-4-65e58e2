@@ -508,6 +508,7 @@ let currentRehearsalStartTime = null;
 let pendingRehearsalResume = null;
 
 const diagnosisStorageKey = "wxyy-4-diagnosis-result";
+const weaknessProfileStorageKey = "wxyy-4-weakness-profile";
 const practiceListStorageKey = "wxyy-4-practice-list";
 const PRIORITY = { HIGH: "high", MEDIUM: "medium", LOW: "low" };
 const CATEGORY_LABELS = {
@@ -537,6 +538,21 @@ let diagnosisWaitingForAnswer = false;
 let diagnosisPaused = false;
 let diagnosisStartTime = null;
 let lastDiagnosisResult = null;
+
+let weaknessProfile = null;
+let weaknessProfileLoaded = false;
+
+const ADAPTIVE_WEIGHTS = {
+  wrongHistory: 0.35,
+  confusedInstruments: 0.25,
+  pendingNotes: 0.15,
+  recentPauses: 0.15,
+  complexity: 0.10
+};
+
+const COLD_START_QUESTION_RATIO = 0.35;
+const MIN_QUESTIONS = 5;
+const MAX_QUESTIONS = 20;
 
 let tempoTrainer = {
   active: false,
@@ -576,6 +592,11 @@ const playCount = document.querySelector("#playCount");
 const focusList = document.querySelector("#focusList");
 const suggestList = document.querySelector("#suggestList");
 const lastPlay = document.querySelector("#lastPlay");
+const weaknessOverall = document.querySelector("#weaknessOverall");
+const weaknessAccuracy = document.querySelector("#weaknessAccuracy");
+const weaknessWrongCount = document.querySelector("#weaknessWrongCount");
+const weaknessConfusedCount = document.querySelector("#weaknessConfusedCount");
+const weaknessTopList = document.querySelector("#weaknessTopList");
 const commandInput = document.querySelector("#commandInput");
 const parseBtn = document.querySelector("#parseBtn");
 const confirmBtn = document.querySelector("#confirmBtn");
@@ -1464,6 +1485,41 @@ function renderDashboard() {
   difficultyCount.textContent = collabStats.total;
   savedCount.textContent = state.saved.length;
   playCount.textContent = state.playCount || 0;
+
+  const weaknessSummary = getWeaknessSummary(section);
+  if (weaknessSummary) {
+    if (weaknessSummary.totalQuestions > 0) {
+      weaknessOverall.textContent = `整体风险：${weaknessSummary.overallWeakness === "high" ? "🔴 高" : weaknessSummary.overallWeakness === "medium" ? "🟡 中" : "🟢 低"}`;
+      weaknessOverall.className = `weakness-overall weakness-${weaknessSummary.overallWeakness}`;
+      weaknessAccuracy.textContent = `${weaknessSummary.accuracy}%`;
+    } else {
+      weaknessOverall.textContent = "暂无诊断数据";
+      weaknessOverall.className = "weakness-overall weakness-none";
+      weaknessAccuracy.textContent = "—";
+    }
+    weaknessWrongCount.textContent = weaknessSummary.wrongStepsCount;
+    weaknessConfusedCount.textContent = weaknessSummary.confusedPairsCount;
+
+    if (weaknessSummary.topWrongSteps.length > 0 || weaknessSummary.topConfusedPairs.length > 0) {
+      let topHtml = "";
+      if (weaknessSummary.topWrongSteps.length > 0) {
+        topHtml += `<div class="weakness-top-title">易错拍点：</div>`;
+        topHtml += weaknessSummary.topWrongSteps.map(step => {
+          const beatLab = beatLabel(step.step);
+          return `<span class="weakness-top-item">${beatLab} (${step.wrongCount}次错)</span>`;
+        }).join("");
+      }
+      if (weaknessSummary.topConfusedPairs.length > 0) {
+        topHtml += `<div class="weakness-top-title">易混淆：</div>`;
+        topHtml += weaknessSummary.topConfusedPairs.map(pair => {
+          return `<span class="weakness-top-item">${pair.label} (${pair.count}次)</span>`;
+        }).join("");
+      }
+      weaknessTopList.innerHTML = topHtml;
+    } else {
+      weaknessTopList.innerHTML = '<div class="weakness-empty">完成诊断练习后将显示薄弱点分析</div>';
+    }
+  }
 
   const focusMeasures = getFocusMeasures();
   if (focusMeasures.length === 0) {
@@ -3635,9 +3691,12 @@ const diagnosisStopBtn = document.querySelector("#diagnosisStopBtn");
 const diagnosisCloseBtn = document.querySelector("#diagnosisCloseBtn");
 const diagnosisDifficulty = document.querySelector("#diagnosisDifficulty");
 const diagnosisStatus = document.querySelector("#diagnosisStatus");
+const diagnosisTotal = document.querySelector("#diagnosisTotal");
 const diagnosisAnswered = document.querySelector("#diagnosisAnswered");
 const diagnosisCorrect = document.querySelector("#diagnosisCorrect");
 const diagnosisAccuracy = document.querySelector("#diagnosisAccuracy");
+const diagnosisCoverage = document.querySelector("#diagnosisCoverage");
+const adaptiveHint = document.querySelector("#adaptiveHint");
 const diagnosisAnswerPanel = document.querySelector("#diagnosisAnswerPanel");
 const diagnosisAnswerButtons = document.querySelector("#diagnosisAnswerButtons");
 const diagnosisFeedback = document.querySelector("#diagnosisFeedback");
@@ -3671,6 +3730,545 @@ function saveDiagnosisResult(result) {
     localStorage.setItem(diagnosisStorageKey, JSON.stringify(result));
     lastDiagnosisResult = result;
   } catch {}
+}
+
+function createEmptyWeaknessProfile() {
+  return {
+    version: 2,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    sections: {},
+    globalStats: {
+      totalDiagnoses: 0,
+      totalCorrect: 0,
+      totalWrong: 0,
+      totalQuestions: 0
+    }
+  };
+}
+
+function getSectionWeaknessKey(section) {
+  if (!section) return "default";
+  return section.id || section.name || "default";
+}
+
+function ensureSectionWeakness(section) {
+  if (!weaknessProfile) {
+    weaknessProfile = createEmptyWeaknessProfile();
+  }
+  const key = getSectionWeaknessKey(section);
+  if (!weaknessProfile.sections[key]) {
+    weaknessProfile.sections[key] = {
+      wrongSteps: {},
+      confusedPairs: {},
+      noteRelatedSteps: [],
+      pauseRelatedSteps: [],
+      stepComplexity: {},
+      stats: {
+        totalQuestions: 0,
+        totalCorrect: 0,
+        totalWrong: 0,
+        lastDiagnosedAt: null
+      }
+    };
+  }
+  return weaknessProfile.sections[key];
+}
+
+function loadWeaknessProfile() {
+  try {
+    const raw = localStorage.getItem(weaknessProfileStorageKey);
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data.version === 2 && data.sections) {
+        weaknessProfile = data;
+        weaknessProfileLoaded = true;
+        return true;
+      }
+    }
+  } catch {}
+  weaknessProfile = null;
+  weaknessProfileLoaded = false;
+  return false;
+}
+
+function saveWeaknessProfile() {
+  if (!weaknessProfile) return false;
+  try {
+    weaknessProfile.updatedAt = new Date().toISOString();
+    localStorage.setItem(weaknessProfileStorageKey, JSON.stringify(weaknessProfile));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function migrateOldDiagnosisToWeaknessProfile() {
+  if (!lastDiagnosisResult) return false;
+
+  const section = getCurrentSection();
+  if (!section) return false;
+
+  const sectionWeakness = ensureSectionWeakness(section);
+  let migrated = 0;
+
+  if (Array.isArray(lastDiagnosisResult.wrongPositions)) {
+    lastDiagnosisResult.wrongPositions.forEach(pos => {
+      const stepKey = String(pos.step);
+      if (!sectionWeakness.wrongSteps[stepKey]) {
+        sectionWeakness.wrongSteps[stepKey] = {
+          step: pos.step,
+          wrongCount: 1,
+          correctCount: 0,
+          lastWrongAt: lastDiagnosisResult.timestamp,
+          lastCorrectAt: null,
+          wrongAnswers: {}
+        };
+        const userAns = pos.userAnswer;
+        const ansKey = typeof userAns === "number" ? String(userAns) : String(userAns);
+        sectionWeakness.wrongSteps[stepKey].wrongAnswers[ansKey] = 1;
+        migrated++;
+      }
+    });
+  }
+
+  if (Array.isArray(lastDiagnosisResult.confusedInstruments)) {
+    lastDiagnosisResult.confusedInstruments.forEach(item => {
+      const pairKey = `${item.instr1}-${item.instr2}`;
+      if (!sectionWeakness.confusedPairs[pairKey]) {
+        sectionWeakness.confusedPairs[pairKey] = {
+          instr1: item.instr1,
+          instr2: item.instr2,
+          count: item.count,
+          lastWrongAt: lastDiagnosisResult.timestamp,
+          label: item.label
+        };
+        migrated++;
+      }
+    });
+  }
+
+  sectionWeakness.stats.totalQuestions = lastDiagnosisResult.answered || 0;
+  sectionWeakness.stats.totalCorrect = lastDiagnosisResult.correct || 0;
+  sectionWeakness.stats.totalWrong = lastDiagnosisResult.wrong || 0;
+  sectionWeakness.stats.lastDiagnosedAt = lastDiagnosisResult.timestamp;
+
+  if (weaknessProfile.globalStats) {
+    weaknessProfile.globalStats.totalDiagnoses = Math.max(weaknessProfile.globalStats.totalDiagnoses, 1);
+    weaknessProfile.globalStats.totalQuestions += lastDiagnosisResult.answered || 0;
+    weaknessProfile.globalStats.totalCorrect += lastDiagnosisResult.correct || 0;
+    weaknessProfile.globalStats.totalWrong += lastDiagnosisResult.wrong || 0;
+  }
+
+  if (migrated > 0) {
+    saveWeaknessProfile();
+  }
+  return migrated > 0;
+}
+
+function updateWeaknessAfterAnswer(step, correct, userAnswer, correctAnswer) {
+  const section = getCurrentSection();
+  if (!section) return;
+
+  const sectionWeakness = ensureSectionWeakness(section);
+  const stepKey = String(step);
+
+  if (!sectionWeakness.wrongSteps[stepKey]) {
+    sectionWeakness.wrongSteps[stepKey] = {
+      step: step,
+      wrongCount: 0,
+      correctCount: 0,
+      lastWrongAt: null,
+      lastCorrectAt: null,
+      wrongAnswers: {}
+    };
+  }
+
+  const stepData = sectionWeakness.wrongSteps[stepKey];
+  const now = new Date().toISOString();
+
+  if (correct) {
+    stepData.correctCount++;
+    stepData.lastCorrectAt = now;
+  } else {
+    stepData.wrongCount++;
+    stepData.lastWrongAt = now;
+    const ansKey = typeof userAnswer === "number" ? String(userAnswer) : String(userAnswer);
+    stepData.wrongAnswers[ansKey] = (stepData.wrongAnswers[ansKey] || 0) + 1;
+
+    const correctInstrs = Array.isArray(correctAnswer) ? correctAnswer :
+      (correctAnswer === -1 ? [] : (typeof correctAnswer === "number" ? [correctAnswer] : []));
+    let userInstrs;
+    if (userAnswer === "ensemble") {
+      userInstrs = correctInstrs.length > 0
+        ? instruments.map((_, i) => i).filter(i => !correctInstrs.includes(i))
+        : [];
+    } else if (userAnswer === -1) {
+      userInstrs = [];
+    } else if (typeof userAnswer === "number") {
+      userInstrs = [userAnswer];
+    } else {
+      userInstrs = [];
+    }
+
+    correctInstrs.forEach(ci => {
+      userInstrs.forEach(ui => {
+        if (ci !== ui) {
+          const pairKey = `${Math.min(ci, ui)}-${Math.max(ci, ui)}`;
+          if (!sectionWeakness.confusedPairs[pairKey]) {
+            sectionWeakness.confusedPairs[pairKey] = {
+              instr1: Math.min(ci, ui),
+              instr2: Math.max(ci, ui),
+              count: 0,
+              lastWrongAt: null,
+              label: `${instruments[Math.min(ci, ui)]?.name || "未知"} ↔ ${instruments[Math.max(ci, ui)]?.name || "未知"}`
+            };
+          }
+          sectionWeakness.confusedPairs[pairKey].count++;
+          sectionWeakness.confusedPairs[pairKey].lastWrongAt = now;
+        }
+      });
+    });
+  }
+
+  sectionWeakness.stats.totalQuestions++;
+  if (correct) {
+    sectionWeakness.stats.totalCorrect++;
+  } else {
+    sectionWeakness.stats.totalWrong++;
+  }
+  sectionWeakness.stats.lastDiagnosedAt = now;
+
+  if (weaknessProfile.globalStats) {
+    weaknessProfile.globalStats.totalQuestions++;
+    if (correct) {
+      weaknessProfile.globalStats.totalCorrect++;
+    } else {
+      weaknessProfile.globalStats.totalWrong++;
+    }
+  }
+
+  saveWeaknessProfile();
+}
+
+function calculateStepComplexity(section, step) {
+  if (!section || !section.pattern) return 0;
+
+  let activeInstruments = 0;
+  for (let row = 0; row < instruments.length; row++) {
+    if (section.pattern[row] && section.pattern[row][step] && section.enabledInstruments[row]) {
+      activeInstruments++;
+    }
+  }
+
+  const bpm = section.beatsPerMeasure || 4;
+  const measure = Math.floor(step / bpm);
+  const measureStart = measure * bpm;
+  const measureEnd = measureStart + bpm;
+
+  let measureDensity = 0;
+  for (let s = measureStart; s < measureEnd && s < getSectionSteps(section); s++) {
+    for (let row = 0; row < instruments.length; row++) {
+      if (section.pattern[row] && section.pattern[row][s] && section.enabledInstruments[row]) {
+        measureDensity++;
+      }
+    }
+  }
+
+  const instrScore = Math.min(activeInstruments / instruments.length, 1);
+  const densityScore = Math.min(measureDensity / (instruments.length * bpm), 1);
+
+  return instrScore * 0.6 + densityScore * 0.4;
+}
+
+function getPendingNoteSteps(section) {
+  if (!section || !Array.isArray(section.collabNotes)) return [];
+  const steps = new Set();
+  const bpm = section.beatsPerMeasure || 4;
+
+  section.collabNotes.forEach(note => {
+    if (note.resolved) return;
+    if (note.target === "all") {
+      for (let s = 0; s < getSectionSteps(section); s++) {
+        steps.add(s);
+      }
+    } else {
+      const measure = Number(note.target);
+      if (!isNaN(measure) && measure >= 0) {
+        const start = measure * bpm;
+        const end = start + bpm;
+        for (let s = start; s < end; s++) {
+          steps.add(s);
+        }
+      }
+    }
+  });
+
+  return Array.from(steps);
+}
+
+function getRecentPauseSteps(section) {
+  if (!rehearsalLog || rehearsalLog.length === 0) return [];
+  const steps = new Map();
+  const recent = rehearsalLog.slice(0, 5);
+  const bpm = section?.beatsPerMeasure || 4;
+  const totalSteps = getSectionSteps(section);
+
+  recent.forEach(entry => {
+    if (entry.pausePosition != null && entry.pauseLabel && !entry.pauseLabel.includes("播放完成")) {
+      let pos = entry.pausePosition;
+      if (pos >= 0 && pos < totalSteps) {
+        steps.set(pos, (steps.get(pos) || 0) + 1);
+        for (let offset = -1; offset <= 1; offset++) {
+          const nearPos = pos + offset;
+          if (nearPos >= 0 && nearPos < totalSteps && nearPos !== pos) {
+            steps.set(nearPos, (steps.get(nearPos) || 0) + 0.5);
+          }
+        }
+      }
+    }
+  });
+
+  return steps;
+}
+
+function getConfusedInstrumentSteps(section, sectionWeakness) {
+  if (!sectionWeakness || !sectionWeakness.confusedPairs) return new Map();
+  const stepScores = new Map();
+  const pairs = Object.values(sectionWeakness.confusedPairs);
+
+  if (pairs.length === 0) return stepScores;
+
+  const maxCount = Math.max(...pairs.map(p => p.count), 1);
+  const totalSteps = getSectionSteps(section);
+
+  for (let step = 0; step < totalSteps; step++) {
+    let score = 0;
+    let activeRows = [];
+    for (let row = 0; row < instruments.length; row++) {
+      if (section.pattern[row] && section.pattern[row][step] && section.enabledInstruments[row]) {
+        activeRows.push(row);
+      }
+    }
+
+    if (activeRows.length === 0) continue;
+
+    pairs.forEach(pair => {
+      const instr1Active = activeRows.includes(pair.instr1);
+      const instr2Active = activeRows.includes(pair.instr2);
+      if (instr1Active || instr2Active) {
+        const pairScore = (pair.count / maxCount) * (instr1Active && instr2Active ? 1 : 0.5);
+        score = Math.max(score, pairScore);
+      }
+    });
+
+    if (score > 0) {
+      stepScores.set(step, score);
+    }
+  }
+
+  return stepScores;
+}
+
+function generateAdaptiveQuestionQueue() {
+  const section = getCurrentSection();
+  if (!section) return [];
+
+  if (!weaknessProfileLoaded) {
+    loadWeaknessProfile();
+  }
+
+  const hasHistory = weaknessProfile && Object.keys(weaknessProfile.sections).length > 0;
+  const sectionWeakness = ensureSectionWeakness(section);
+  const totalSteps = getSectionSteps(section);
+
+  const noteSteps = getPendingNoteSteps(section);
+  const noteStepSet = new Set(noteSteps);
+
+  const pauseStepMap = getRecentPauseSteps(section);
+
+  const confusedStepMap = getConfusedInstrumentSteps(section, sectionWeakness);
+
+  const candidateSteps = [];
+
+  for (let step = 0; step < totalSteps; step++) {
+    const activeRows = [];
+    for (let row = 0; row < instruments.length; row++) {
+      if (section.pattern[row] && section.pattern[row][step] && section.enabledInstruments[row]) {
+        activeRows.push(row);
+      }
+    }
+
+    let correctAnswer;
+    if (activeRows.length === 0) {
+      correctAnswer = -1;
+    } else if (activeRows.length === 1) {
+      correctAnswer = activeRows[0];
+    } else {
+      correctAnswer = activeRows;
+    }
+
+    candidateSteps.push({
+      step: step,
+      rows: activeRows,
+      correctAnswer: correctAnswer,
+      scores: {
+        wrongHistory: 0,
+        confusedInstruments: 0,
+        pendingNotes: 0,
+        recentPauses: 0,
+        complexity: 0
+      },
+      totalScore: 0
+    });
+  }
+
+  const wrongStepEntries = Object.entries(sectionWeakness.wrongSteps);
+  const maxWrongCount = wrongStepEntries.length > 0
+    ? Math.max(...wrongStepEntries.map(([, d]) => d.wrongCount), 1)
+    : 1;
+
+  candidateSteps.forEach(candidate => {
+    const stepKey = String(candidate.step);
+    const stepData = sectionWeakness.wrongSteps[stepKey];
+
+    if (stepData && stepData.wrongCount > 0) {
+      const wrongRatio = stepData.wrongCount / (stepData.wrongCount + stepData.correctCount);
+      const freqScore = stepData.wrongCount / maxWrongCount;
+      const recencyScore = stepData.lastWrongAt
+        ? Math.max(0, 1 - (Date.now() - new Date(stepData.lastWrongAt).getTime()) / (7 * 24 * 60 * 60 * 1000))
+        : 0.5;
+      candidate.scores.wrongHistory = wrongRatio * 0.5 + freqScore * 0.3 + recencyScore * 0.2;
+    }
+
+    if (confusedStepMap.has(candidate.step)) {
+      candidate.scores.confusedInstruments = confusedStepMap.get(candidate.step);
+    }
+
+    if (noteStepSet.has(candidate.step)) {
+      candidate.scores.pendingNotes = 1;
+    }
+
+    if (pauseStepMap.has(candidate.step)) {
+      candidate.scores.recentPauses = Math.min(pauseStepMap.get(candidate.step) / 3, 1);
+    }
+
+    candidate.scores.complexity = calculateStepComplexity(section, candidate.step);
+
+    candidate.totalScore =
+      candidate.scores.wrongHistory * ADAPTIVE_WEIGHTS.wrongHistory +
+      candidate.scores.confusedInstruments * ADAPTIVE_WEIGHTS.confusedInstruments +
+      candidate.scores.pendingNotes * ADAPTIVE_WEIGHTS.pendingNotes +
+      candidate.scores.recentPauses * ADAPTIVE_WEIGHTS.recentPauses +
+      candidate.scores.complexity * ADAPTIVE_WEIGHTS.complexity;
+  });
+
+  let questionCount;
+  if (!hasHistory) {
+    questionCount = Math.max(MIN_QUESTIONS, Math.floor(totalSteps * COLD_START_QUESTION_RATIO));
+  } else {
+    const avgScore = candidateSteps.reduce((s, c) => s + c.totalScore, 0) / totalSteps;
+    const dynamicRatio = 0.2 + avgScore * 0.4;
+    questionCount = Math.max(MIN_QUESTIONS, Math.floor(totalSteps * dynamicRatio));
+  }
+  questionCount = Math.min(questionCount, MAX_QUESTIONS, totalSteps);
+
+  candidateSteps.sort((a, b) => b.totalScore - a.totalScore);
+
+  const selected = [];
+  const guaranteedCount = Math.min(3, questionCount);
+  for (let i = 0; i < guaranteedCount && i < candidateSteps.length; i++) {
+    if (candidateSteps[i].totalScore > 0) {
+      selected.push(candidateSteps[i]);
+    }
+  }
+
+  const remainingCandidates = candidateSteps.filter(c => !selected.includes(c));
+  const remainingNeeded = questionCount - selected.length;
+
+  if (remainingNeeded > 0 && remainingCandidates.length > 0) {
+    const totalWeight = remainingCandidates.reduce((s, c) => s + Math.max(c.totalScore, 0.01), 0);
+    let cumulative = 0;
+    const weighted = remainingCandidates.map(c => {
+      cumulative += Math.max(c.totalScore, 0.01) / totalWeight;
+      return { candidate: c, weight: cumulative };
+    });
+
+    const selectedIndices = new Set();
+    for (let i = 0; i < remainingNeeded && i < remainingCandidates.length; i++) {
+      let rand = Math.random();
+      let chosen = null;
+      for (const w of weighted) {
+        if (!selectedIndices.has(w.candidate.step) && rand <= w.weight) {
+          chosen = w.candidate;
+          break;
+        }
+      }
+      if (!chosen) {
+        for (const w of weighted) {
+          if (!selectedIndices.has(w.candidate.step)) {
+            chosen = w.candidate;
+            break;
+          }
+        }
+      }
+      if (chosen) {
+        selectedIndices.add(chosen.step);
+        selected.push(chosen);
+      }
+    }
+  }
+
+  selected.sort((a, b) => a.step - b.step);
+
+  return selected.map(s => ({
+    step: s.step,
+    rows: s.rows,
+    correctAnswer: s.correctAnswer,
+    scores: s.scores,
+    totalScore: s.totalScore
+  }));
+}
+
+function getWeaknessSummary(section) {
+  if (!section) return null;
+  const sectionWeakness = ensureSectionWeakness(section);
+
+  const wrongSteps = Object.values(sectionWeakness.wrongSteps)
+    .filter(s => s.wrongCount > 0)
+    .sort((a, b) => b.wrongCount - a.wrongCount);
+
+  const confusedPairs = Object.values(sectionWeakness.confusedPairs)
+    .sort((a, b) => b.count - a.count);
+
+  const stats = sectionWeakness.stats;
+  const accuracy = stats.totalQuestions > 0
+    ? Math.round((stats.totalCorrect / stats.totalQuestions) * 100)
+    : 0;
+
+  const topWrongSteps = wrongSteps.slice(0, 5);
+  const topConfusedPairs = confusedPairs.slice(0, 3);
+
+  const noteSteps = getPendingNoteSteps(section);
+  const pauseSteps = getRecentPauseSteps(section);
+
+  const overallWeakness = wrongSteps.length > 0 || confusedPairs.length > 0
+    ? "high"
+    : (noteSteps.length > 0 || pauseSteps.size > 0 ? "medium" : "low");
+
+  return {
+    accuracy,
+    totalQuestions: stats.totalQuestions,
+    totalWrong: stats.totalWrong,
+    wrongStepsCount: wrongSteps.length,
+    confusedPairsCount: confusedPairs.length,
+    topWrongSteps,
+    topConfusedPairs,
+    noteStepsCount: noteSteps.length,
+    pauseStepsCount: pauseSteps.size,
+    overallWeakness,
+    lastDiagnosedAt: stats.lastDiagnosedAt
+  };
 }
 
 function updatePlayButtonsState() {
@@ -4062,8 +4660,8 @@ function toggleTempoTrainer() {
   tempoTrainer.enabled = enabled;
 
   if (enabled) {
-    if (diagnosisActive) {
-      alert("诊断练习进行中，请先结束诊断练习。");
+    if (diagnosisActive || diagnosisMode) {
+      alert("诊断模式已开启，请先关闭诊断模式再使用变速训练。");
       tempoTrainerToggle.checked = false;
       tempoTrainer.enabled = false;
       return;
@@ -4098,6 +4696,12 @@ function getDifficultyRatio() {
 }
 
 function generateHiddenCells() {
+  const difficulty = diagnosisDifficulty?.value || "adaptive";
+
+  if (difficulty === "adaptive") {
+    return generateAdaptiveQuestionQueue();
+  }
+
   const section = getCurrentSection();
   if (!section) return [];
 
@@ -4149,9 +4753,23 @@ function updateDiagnosisInfo() {
   const total = diagnosisHiddenCells.length;
   const accuracy = answered > 0 ? Math.round((correct / answered) * 100) : 0;
 
+  if (diagnosisTotal) {
+    diagnosisTotal.textContent = total;
+  }
   diagnosisAnswered.textContent = `${answered}/${total}`;
   diagnosisCorrect.textContent = correct;
   diagnosisAccuracy.textContent = answered > 0 ? `${accuracy}%` : "—";
+
+  if (diagnosisCoverage) {
+    const difficulty = diagnosisDifficulty?.value || "adaptive";
+    if (difficulty === "adaptive") {
+      const highScoreCount = diagnosisHiddenCells.filter(q => q.totalScore > 0.3).length;
+      const coverage = total > 0 ? Math.round((highScoreCount / total) * 100) : 0;
+      diagnosisCoverage.textContent = `${coverage}%`;
+    } else {
+      diagnosisCoverage.textContent = "随机";
+    }
+  }
 }
 
 function formatAnswerLabel(answer) {
@@ -4261,6 +4879,8 @@ function answerDiagnosis(answerIndexRaw) {
     correct: isCorrect,
     beatLabel: beatLabel(question.step)
   });
+
+  updateWeaknessAfterAnswer(question.step, isCorrect, userAnswer, correctAnswer);
 
   if (!isCorrect) {
     diagnosisStats.wrongPositions.push({
@@ -4449,6 +5069,13 @@ function startDiagnosis() {
     return;
   }
 
+  if (continuousPlayCheckbox && continuousPlayCheckbox.checked) {
+    if (!confirm("诊断练习期间将关闭连续播放，是否继续？")) {
+      return;
+    }
+    continuousPlayCheckbox.checked = false;
+  }
+
   const section = getCurrentSection();
   if (!section) {
     alert("请先选择一个段落。");
@@ -4466,6 +5093,13 @@ function startDiagnosis() {
   if (diagnosisTimer) {
     clearInterval(diagnosisTimer);
     diagnosisTimer = null;
+  }
+
+  if (!weaknessProfileLoaded) {
+    loadWeaknessProfile();
+    if (!weaknessProfile) {
+      migrateOldDiagnosisToWeaknessProfile();
+    }
   }
 
   diagnosisHiddenCells = generateHiddenCells();
@@ -4535,6 +5169,14 @@ function stopDiagnosis() {
     const result = buildDiagnosisResultData();
     saveDiagnosisResult(result);
     showDiagnosisResult();
+
+    if (weaknessProfile && weaknessProfile.globalStats) {
+      weaknessProfile.globalStats.totalDiagnoses++;
+      saveWeaknessProfile();
+    }
+
+    renderDashboard();
+    regeneratePracticeTasks();
   }
 }
 
@@ -4672,9 +5314,11 @@ function toggleDiagnosisMode() {
     diagnosisAnswerPanel.style.display = "none";
     diagnosisResult.style.display = "none";
     diagnosisStatus.textContent = "准备就绪";
+    if (diagnosisTotal) diagnosisTotal.textContent = "0";
     diagnosisAnswered.textContent = "0";
     diagnosisCorrect.textContent = "0";
     diagnosisAccuracy.textContent = "—";
+    if (diagnosisCoverage) diagnosisCoverage.textContent = "—";
 
     if (lastDiagnosisResult) {
       showLastDiagnosisResult();
@@ -4732,6 +5376,10 @@ diagnosisAnswerButtons.addEventListener("click", (event) => {
 });
 
 loadLastDiagnosisResult();
+loadWeaknessProfile();
+if (!weaknessProfile && lastDiagnosisResult) {
+  migrateOldDiagnosisToWeaknessProfile();
+}
 
 loadPracticeTasks();
 
@@ -5180,56 +5828,108 @@ function generateTasksFromRehearsal() {
 }
 
 function generateTasksFromDiagnosis() {
-  if (!lastDiagnosisResult) return [];
+  const section = getCurrentSection();
+  if (!section) return [];
+
   const tasks = [];
-  const { wrongPositions = [], confusedInstruments = [], accuracy = 100 } = lastDiagnosisResult;
-  const curSection = getCurrentSection();
-  const maxMc = curSection?.measureCount || 4;
-  const bpm = curSection?.beatsPerMeasure || 4;
+
+  if (!weaknessProfileLoaded) {
+    loadWeaknessProfile();
+    if (!weaknessProfile && lastDiagnosisResult) {
+      migrateOldDiagnosisToWeaknessProfile();
+    }
+  }
+
+  const sectionWeakness = weaknessProfile
+    ? weaknessProfile.sections[getSectionWeaknessKey(section)]
+    : null;
+
+  const hasWeaknessData = sectionWeakness &&
+    (Object.keys(sectionWeakness.wrongSteps || {}).length > 0 ||
+     Object.keys(sectionWeakness.confusedPairs || {}).length > 0);
+
+  let accuracy = 100;
+  let wrongSteps = [];
+  let confusedPairs = [];
+
+  if (hasWeaknessData) {
+    const stats = sectionWeakness.stats;
+    accuracy = stats.totalQuestions > 0
+      ? Math.round((stats.totalCorrect / stats.totalQuestions) * 100)
+      : 100;
+
+    wrongSteps = Object.values(sectionWeakness.wrongSteps)
+      .filter(s => s.wrongCount > 0)
+      .sort((a, b) => b.wrongCount - a.wrongCount);
+
+    confusedPairs = Object.values(sectionWeakness.confusedPairs)
+      .sort((a, b) => b.count - a.count);
+  } else if (lastDiagnosisResult) {
+    accuracy = lastDiagnosisResult.accuracy || 100;
+    wrongSteps = lastDiagnosisResult.wrongPositions || [];
+    confusedPairs = lastDiagnosisResult.confusedInstruments || [];
+  } else {
+    return [];
+  }
+
+  const maxMc = section.measureCount || 4;
+  const bpm = section.beatsPerMeasure || 4;
+
   if (accuracy < 80) {
     const priority = accuracy < 50 ? PRIORITY.HIGH : PRIORITY.MEDIUM;
     tasks.push(makePracticeTask({
       category: "diagnosis",
       priority,
       title: `整体错拍率较高（正确率 ${accuracy}%），建议重新做一轮诊断练习`,
-      description: `上次诊断练习正确率仅 ${accuracy}%，建议降低难度或先针对易错位置专项练习后再重新诊断。`,
+      description: `诊断练习正确率仅 ${accuracy}%，建议针对易错位置专项练习后再重新诊断。自适应系统已根据你的薄弱点生成题目。`,
       sourceData: { accuracy }
     }));
   }
-  if (Array.isArray(wrongPositions) && wrongPositions.length > 0) {
+
+  if (wrongSteps.length > 0) {
     const measureMap = new Map();
-    wrongPositions.forEach(pos => {
-      const measure = Math.floor((pos.step || 0) / bpm);
+    wrongSteps.forEach(step => {
+      const stepIndex = step.step != null ? step.step : (step.step || 0);
+      const measure = Math.floor(stepIndex / bpm);
       if (!measureMap.has(measure)) measureMap.set(measure, []);
-      measureMap.get(measure).push(pos);
+      measureMap.get(measure).push(step);
     });
-    measureMap.forEach((positions, measure) => {
+
+    measureMap.forEach((steps, measure) => {
       if (measure >= 0 && measure < maxMc) {
-        const beatLabels = positions.map(p => p.beatLabel || `第${measure + 1}小节`).join("、");
-        const priority = positions.length >= 2 ? PRIORITY.HIGH : PRIORITY.MEDIUM;
+        const beatLabels = steps.map(s => {
+          if (s.beatLabel) return s.beatLabel;
+          const stepIdx = s.step != null ? s.step : s.step;
+          return beatLabel(stepIdx);
+        }).join("、");
+        const totalWrong = steps.reduce((sum, s) => sum + (s.wrongCount || 1), 0);
+        const priority = steps.length >= 2 || totalWrong >= 3 ? PRIORITY.HIGH : PRIORITY.MEDIUM;
         tasks.push(makePracticeTask({
           category: "diagnosis",
           priority,
           measure,
-          title: `纠正第${measure + 1}小节的错拍（${positions.length}处错误）`,
-          description: `错拍位置：${beatLabels}\n建议慢速逐拍练习，确认每个拍点的乐器口令准确后再逐步提速。`,
-          sourceData: { measure, positions: positions.map(p => p.step) }
+          title: `纠正第${measure + 1}小节的错拍（${steps.length}处易错点）`,
+          description: `易错拍点：${beatLabels}\n累计错误 ${totalWrong} 次。建议慢速逐拍练习，确认每个拍点的乐器口令准确后再逐步提速。`,
+          sourceData: { measure, steps: steps.map(s => s.step != null ? s.step : s.step) }
         }));
       }
     });
   }
-  if (Array.isArray(confusedInstruments) && confusedInstruments.length > 0) {
-    confusedInstruments.slice(0, 2).forEach(item => {
+
+  if (confusedPairs.length > 0) {
+    confusedPairs.slice(0, 2).forEach(item => {
       const priority = item.count >= 3 ? PRIORITY.HIGH : PRIORITY.MEDIUM;
+      const label = item.label || `${instruments[item.instr1]?.name || "未知"} ↔ ${instruments[item.instr2]?.name || "未知"}`;
       tasks.push(makePracticeTask({
         category: "diagnosis",
         priority,
-        title: `区分易混淆乐器：${item.label}（混淆${item.count}次）`,
-        description: `诊断练习中「${item.label}」出现了 ${item.count} 次混淆，建议对比两种乐器的音色特征，单独听辨练习。`,
+        title: `区分易混淆乐器：${label}（混淆${item.count}次）`,
+        description: `诊断练习中「${label}」出现了 ${item.count} 次混淆，建议对比两种乐器的音色特征，单独听辨练习。`,
         sourceData: { confusedItem: item }
       }));
     });
   }
+
   return tasks;
 }
 
