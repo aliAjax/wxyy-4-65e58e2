@@ -5135,6 +5135,9 @@ function startDiagnosis() {
       return;
     }
     continuousPlayCheckbox.checked = false;
+    state.continuousPlay = false;
+    save();
+    renderDashboard();
   }
 
   const section = getCurrentSection();
