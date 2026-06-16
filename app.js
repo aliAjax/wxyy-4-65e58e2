@@ -2054,6 +2054,9 @@ function renderPhraseList() {
     const type = getPhraseType(phrase.type);
     const isSelected = selectedPhraseId === phrase.id;
     const measureRange = phrase.endMeasure - phrase.startMeasure + 1;
+    const idx = phrases.findIndex(p => p.id === phrase.id);
+    const canMoveUp = idx > 0 || phrase.startMeasure > 0;
+    const canMoveDown = idx < phrases.length - 1 || phrase.endMeasure < mc - 1;
     return `
       <div class="phrase-item ${isSelected ? "selected" : ""}" 
            data-phrase-id="${phrase.id}"
@@ -2071,6 +2074,10 @@ function renderPhraseList() {
         </div>
         ${phrase.note ? `<div class="phrase-note-preview">${phrase.note}</div>` : ""}
         <div class="phrase-item-actions">
+          <button type="button" class="phrase-item-btn" data-phrase-move-up="${phrase.id}" title="上移" ${canMoveUp ? "" : "disabled"}>↑</button>
+          <button type="button" class="phrase-item-btn" data-phrase-move-down="${phrase.id}" title="下移" ${canMoveDown ? "" : "disabled"}>↓</button>
+          <button type="button" class="phrase-item-btn" data-phrase-shift-left="${phrase.id}" title="前移一小节" ${phrase.startMeasure > 0 ? "" : "disabled"}>←</button>
+          <button type="button" class="phrase-item-btn" data-phrase-shift-right="${phrase.id}" title="后移一小节" ${phrase.endMeasure < mc - 1 ? "" : "disabled"}>→</button>
           <button type="button" class="phrase-item-btn" data-phrase-edit="${phrase.id}" title="编辑">✎</button>
           <button type="button" class="phrase-item-btn" data-phrase-duplicate="${phrase.id}" title="复制">⎘</button>
           <button type="button" class="phrase-item-btn" data-phrase-save-lib="${phrase.id}" title="存为模板">💾</button>
@@ -2173,6 +2180,7 @@ function savePhraseFromEditor() {
   save();
   renderPhraseList();
   renderGrid();
+  renderDashboard();
   closePhraseEditor();
 }
 
@@ -2201,6 +2209,7 @@ function duplicatePhrase(phraseId) {
   save();
   renderPhraseList();
   renderGrid();
+  renderDashboard();
 }
 
 function deletePhrase(phraseId) {
@@ -2214,6 +2223,89 @@ function deletePhrase(phraseId) {
   save();
   renderPhraseList();
   renderGrid();
+  renderDashboard();
+}
+
+function movePhrase(phraseId, direction) {
+  const section = getCurrentSection();
+  if (!section) return;
+  ensureSectionPhrases(section);
+  const mc = section.measureCount || 4;
+  const sorted = [...section.phrases].sort((a, b) => a.startMeasure - b.startMeasure);
+  const idx = sorted.findIndex(p => p.id === phraseId);
+  if (idx < 0) return;
+  const phrase = sorted[idx];
+  const span = phrase.endMeasure - phrase.startMeasure + 1;
+  if (direction < 0) {
+    if (phrase.startMeasure <= 0) return;
+    const newStart = phrase.startMeasure - 1;
+    const newEnd = newStart + span - 1;
+    if (idx > 0) {
+      const prev = sorted[idx - 1];
+      if (newEnd >= prev.startMeasure) {
+        const tmp = { ...prev };
+        prev.startMeasure = phrase.startMeasure;
+        prev.endMeasure = phrase.endMeasure;
+        phrase.startMeasure = tmp.startMeasure - 1;
+        phrase.endMeasure = tmp.endMeasure - 1;
+      } else {
+        phrase.startMeasure = newStart;
+        phrase.endMeasure = newEnd;
+      }
+    } else {
+      phrase.startMeasure = newStart;
+      phrase.endMeasure = newEnd;
+    }
+  } else {
+    if (phrase.endMeasure >= mc - 1) return;
+    const newStart = phrase.startMeasure + 1;
+    const newEnd = newStart + span - 1;
+    if (idx < sorted.length - 1) {
+      const next = sorted[idx + 1];
+      if (newStart <= next.endMeasure) {
+        const tmp = { ...next };
+        next.startMeasure = phrase.startMeasure;
+        next.endMeasure = phrase.endMeasure;
+        phrase.startMeasure = tmp.startMeasure + 1;
+        phrase.endMeasure = tmp.endMeasure + 1;
+      } else {
+        phrase.startMeasure = newStart;
+        phrase.endMeasure = newEnd;
+      }
+    } else {
+      phrase.startMeasure = newStart;
+      phrase.endMeasure = newEnd;
+    }
+  }
+  phrase.updatedAt = new Date().toISOString();
+  section.phrases = normalizePhraseOverlaps(section.phrases, mc);
+  save();
+  renderPhraseList();
+  renderGrid();
+  renderDashboard();
+}
+
+function shiftPhraseMeasures(phraseId, measureDelta) {
+  const section = getCurrentSection();
+  if (!section) return;
+  ensureSectionPhrases(section);
+  const mc = section.measureCount || 4;
+  const phrase = section.phrases.find(p => p.id === phraseId);
+  if (!phrase) return;
+  const span = phrase.endMeasure - phrase.startMeasure + 1;
+  let newStart = phrase.startMeasure + measureDelta;
+  let newEnd = phrase.endMeasure + measureDelta;
+  newStart = Math.max(0, Math.min(mc - span, newStart));
+  newEnd = newStart + span - 1;
+  if (newStart === phrase.startMeasure) return;
+  phrase.startMeasure = newStart;
+  phrase.endMeasure = newEnd;
+  phrase.updatedAt = new Date().toISOString();
+  section.phrases = normalizePhraseOverlaps(section.phrases, mc);
+  save();
+  renderPhraseList();
+  renderGrid();
+  renderDashboard();
 }
 
 function savePhraseToLibrary(phraseId) {
@@ -2285,6 +2377,7 @@ function insertPhraseFromLibrary(libItem, targetMeasure = 0) {
   renderPhraseList();
   renderGrid();
   renderSidebars();
+  renderDashboard();
 }
 
 function renderPhraseLibrary() {
@@ -3421,8 +3514,21 @@ function applyParsedPattern() {
     }
   }
 
+  state.sections.forEach(sec => {
+    ensureSectionPhrases(sec);
+    const mc = sec.measureCount || 4;
+    sec.phrases = normalizePhraseOverlaps(sec.phrases, mc);
+  });
+  if (state.currentSectionId) {
+    const cur = getCurrentSection();
+    if (cur && (!cur.phrases || cur.phrases.length === 0)) {
+      autoGeneratePhrases(cur);
+    }
+  }
+
   save();
   render();
+  renderPhraseList();
   importSummary.innerHTML = message;
   resetImportState();
   commandInput.value = "";
@@ -4317,6 +4423,10 @@ if (phraseList) {
     const editBtn = event.target.closest("[data-phrase-edit]");
     const duplicateBtn = event.target.closest("[data-phrase-duplicate]");
     const saveLibBtn = event.target.closest("[data-phrase-save-lib]");
+    const moveUpBtn = event.target.closest("[data-phrase-move-up]");
+    const moveDownBtn = event.target.closest("[data-phrase-move-down]");
+    const shiftLeftBtn = event.target.closest("[data-phrase-shift-left]");
+    const shiftRightBtn = event.target.closest("[data-phrase-shift-right]");
     const phraseItem = event.target.closest("[data-phrase-id]");
 
     if (editBtn) {
@@ -4331,6 +4441,22 @@ if (phraseList) {
       event.stopPropagation();
       const phraseId = saveLibBtn.dataset.phraseSaveLib;
       savePhraseToLibrary(phraseId);
+    } else if (moveUpBtn) {
+      event.stopPropagation();
+      const phraseId = moveUpBtn.dataset.phraseMoveUp;
+      movePhrase(phraseId, -1);
+    } else if (moveDownBtn) {
+      event.stopPropagation();
+      const phraseId = moveDownBtn.dataset.phraseMoveDown;
+      movePhrase(phraseId, 1);
+    } else if (shiftLeftBtn) {
+      event.stopPropagation();
+      const phraseId = shiftLeftBtn.dataset.phraseShiftLeft;
+      shiftPhraseMeasures(phraseId, -1);
+    } else if (shiftRightBtn) {
+      event.stopPropagation();
+      const phraseId = shiftRightBtn.dataset.phraseShiftRight;
+      shiftPhraseMeasures(phraseId, 1);
     } else if (phraseItem) {
       const phraseId = phraseItem.dataset.phraseId;
       selectedPhraseId = selectedPhraseId === phraseId ? null : phraseId;
@@ -5151,6 +5277,8 @@ const resultAccuracy = document.querySelector("#resultAccuracy");
 const resultTotal = document.querySelector("#resultTotal");
 const resultCorrect = document.querySelector("#resultCorrect");
 const resultWrong = document.querySelector("#resultWrong");
+const phraseDiagnosisSection = document.querySelector("#phraseDiagnosisSection");
+const phraseDiagnosisList = document.querySelector("#phraseDiagnosisList");
 
 const practiceListSection = document.querySelector("#practiceList");
 const practiceListBody = document.querySelector("#practiceListBody");
@@ -6742,6 +6870,52 @@ function finishDiagnosis() {
   stopDiagnosis();
 }
 
+function analyzePhraseDiagnosis(wrongPositions) {
+  const section = getCurrentSection();
+  if (!section || !section.phrases || section.phrases.length === 0) return [];
+  const bpm = section.beatsPerMeasure || 4;
+  const phraseStats = new Map();
+  section.phrases.forEach(phrase => {
+    phraseStats.set(phrase.id, {
+      phrase,
+      totalQuestions: 0,
+      wrongCount: 0,
+      wrongDetails: []
+    });
+  });
+  diagnosisHiddenCells.forEach(q => {
+    const measure = Math.floor(q.step / bpm);
+    section.phrases.forEach(phrase => {
+      if (measure >= phrase.startMeasure && measure <= phrase.endMeasure) {
+        const stat = phraseStats.get(phrase.id);
+        if (stat) stat.totalQuestions++;
+      }
+    });
+  });
+  wrongPositions.forEach(pos => {
+    const measure = Math.floor(pos.step / bpm);
+    section.phrases.forEach(phrase => {
+      if (measure >= phrase.startMeasure && measure <= phrase.endMeasure) {
+        const stat = phraseStats.get(phrase.id);
+        if (stat) {
+          stat.wrongCount++;
+          stat.wrongDetails.push(pos);
+        }
+      }
+    });
+  });
+  const result = [];
+  phraseStats.forEach(stat => {
+    if (stat.totalQuestions > 0) {
+      stat.accuracy = stat.totalQuestions > 0
+        ? Math.round(((stat.totalQuestions - stat.wrongCount) / stat.totalQuestions) * 100)
+        : 100;
+      result.push(stat);
+    }
+  });
+  return result.sort((a, b) => a.accuracy - b.accuracy);
+}
+
 function buildDiagnosisResultData() {
   return {
     timestamp: new Date().toISOString(),
@@ -6758,8 +6932,40 @@ function buildDiagnosisResultData() {
       : 0,
     wrongPositions: [...diagnosisStats.wrongPositions],
     confusedInstruments: Object.values(diagnosisStats.confusedInstruments).sort((a, b) => b.count - a.count),
+    phraseAnalysis: analyzePhraseDiagnosis(diagnosisStats.wrongPositions),
     durationMs: diagnosisStartTime ? Date.now() - diagnosisStartTime : null
   };
+}
+
+function renderPhraseDiagnosisList(phraseAnalysis) {
+  if (!phraseDiagnosisSection || !phraseDiagnosisList) return;
+  if (!phraseAnalysis || phraseAnalysis.length === 0) {
+    phraseDiagnosisSection.style.display = "none";
+    return;
+  }
+  phraseDiagnosisSection.style.display = "block";
+  phraseDiagnosisList.innerHTML = phraseAnalysis.map(stat => {
+    const type = getPhraseType(stat.phrase.type);
+    const accuracyColor = stat.accuracy >= 80 ? "#047857" : stat.accuracy >= 50 ? "#b45309" : "#991b1b";
+    const weakBadge = stat.accuracy < 70 ? '<span class="weak-phrase-badge" style="background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:4px;font-size:11px;margin-left:4px;">⚠️ 薄弱</span>' : '';
+    return `
+      <div class="phrase-diagnosis-item" style="border-left:3px solid ${stat.phrase.color || type.color};padding:8px 12px;margin-bottom:8px;background:${stat.phrase.color || type.color}10;border-radius:4px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <span style="font-weight:600;">${type.icon} ${stat.phrase.name || type.name}</span>
+          <span style="font-weight:600;color:${accuracyColor};">${stat.accuracy}%</span>
+        </div>
+        <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">
+          📏 第${stat.phrase.startMeasure + 1}-${stat.phrase.endMeasure + 1}小节 · 
+          共${stat.totalQuestions}题 · 错${stat.wrongCount}题${weakBadge}
+        </div>
+        ${stat.wrongDetails.length > 0 ? `
+          <div style="font-size:11px;color:#6b7280;">
+            错拍：${stat.wrongDetails.map(d => d.beatLabel).slice(0, 5).join("、")}${stat.wrongDetails.length > 5 ? "..." : ""}
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }).join("");
 }
 
 function showDiagnosisResult() {
@@ -6802,6 +7008,9 @@ function showDiagnosisResult() {
   } else {
     confusedInstrumentsEl.innerHTML = '<span class="diagnosis-empty">暂无混淆记录</span>';
   }
+
+  const phraseAnalysis = analyzePhraseDiagnosis(diagnosisStats.wrongPositions);
+  renderPhraseDiagnosisList(phraseAnalysis);
 
   diagnosisResult.style.display = "block";
 }
@@ -6848,6 +7057,8 @@ function showLastDiagnosisResult() {
   } else {
     confusedInstrumentsEl.innerHTML = '<span class="diagnosis-empty">暂无混淆记录</span>';
   }
+
+  renderPhraseDiagnosisList(lastDiagnosisResult.phraseAnalysis);
 
   diagnosisResult.style.display = "block";
   diagnosisStatus.textContent = lastDiagnosisResult.timestamp
