@@ -22,6 +22,7 @@
         </label>
         <button id="saveBtn" type="button">保存方案</button>
         <button id="diagnosisToggleBtn" type="button" class="diagnosis-mode-btn">🎯 错拍诊断</button>
+        <button id="rehearsalReviewBtn" type="button" class="review-mode-btn">📼 排练复盘</button>
       </div>
     </header>
 
@@ -317,6 +318,205 @@
         <div class="rehearsal-empty">尚未产生排练记录，播放后将自动记录</div>
       </div>
     </section>
+
+    <div class="review-overlay" id="reviewOverlay" style="display:none;">
+      <div class="review-modal">
+        <div class="review-header">
+          <div>
+            <h2>📼 排练复盘模式</h2>
+            <p class="review-subtitle" id="reviewSubtitle">选择一条排练记录开始复盘分析</p>
+          </div>
+          <div class="review-header-actions">
+            <span class="review-storage-info" id="reviewStorageInfo"></span>
+            <button type="button" class="review-close-btn" id="reviewCloseBtn">✕</button>
+          </div>
+        </div>
+
+        <div class="review-body">
+          <div class="review-sidebar">
+            <div class="review-sidebar-section">
+              <h3>📋 排练记录列表</h3>
+              <div class="review-record-list" id="reviewRecordList">
+                <div class="review-empty">暂无排练记录</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="review-main">
+            <div class="review-empty-state" id="reviewEmptyState">
+              <div class="review-empty-icon">🎬</div>
+              <p>从左侧选择一条排练记录，或结束一次播放后自动进入复盘</p>
+            </div>
+
+            <div class="review-content" id="reviewContent" style="display:none;">
+              <div class="review-summary">
+                <div class="review-summary-item">
+                  <span class="summary-label">剧目</span>
+                  <span class="summary-value" id="reviewPieceName">-</span>
+                </div>
+                <div class="review-summary-item">
+                  <span class="summary-label">段落</span>
+                  <span class="summary-value" id="reviewSectionName">-</span>
+                </div>
+                <div class="review-summary-item">
+                  <span class="summary-label">BPM</span>
+                  <span class="summary-value" id="reviewBpm">-</span>
+                </div>
+                <div class="review-summary-item">
+                  <span class="summary-label">时长</span>
+                  <span class="summary-value" id="reviewDuration">-</span>
+                </div>
+                <div class="review-summary-item">
+                  <span class="summary-label">结束位置</span>
+                  <span class="summary-value" id="reviewPauseLabel">-</span>
+                </div>
+                <div class="review-summary-item">
+                  <span class="summary-label">模式</span>
+                  <span class="summary-value" id="reviewMode">-</span>
+                </div>
+              </div>
+
+              <div class="review-section">
+                <h3>⏱️ 时间轴</h3>
+                <div class="review-timeline" id="reviewTimeline">
+                  <div class="timeline-ruler" id="timelineRuler"></div>
+                  <div class="timeline-track" id="timelineTrack"></div>
+                  <div class="timeline-cursor" id="timelineCursor" style="display:none;"></div>
+                </div>
+                <div class="timeline-controls">
+                  <span class="timeline-position" id="timelinePosition">-</span>
+                  <div class="timeline-btns">
+                    <button type="button" class="timeline-btn" id="timelinePrevBtn" title="上一事件">◀</button>
+                    <button type="button" class="timeline-btn" id="timelineNextBtn" title="下一事件">▶</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="review-grid-row">
+                <div class="review-section review-events">
+                  <h3>📝 事件日志</h3>
+                  <div class="review-event-list" id="reviewEventList">
+                    <div class="review-empty">暂无事件数据</div>
+                  </div>
+                </div>
+
+                <div class="review-section review-snapshot">
+                  <h3>🎵 谱面快照</h3>
+                  <div class="review-snapshot-mini" id="reviewSnapshotMini">
+                    <div class="review-empty">选择事件查看快照</div>
+                  </div>
+                  <div class="review-snapshot-detail" id="reviewSnapshotDetail" style="display:none;"></div>
+                </div>
+              </div>
+
+              <div class="review-grid-row">
+                <div class="review-section review-weakness">
+                  <h3>🎯 薄弱点诊断</h3>
+                  <div class="review-weakness-content" id="reviewWeaknessContent">
+                    <div class="review-empty">尚未分析</div>
+                  </div>
+                </div>
+
+                <div class="review-section review-notes">
+                  <h3>📋 相关批注</h3>
+                  <div class="review-notes-list" id="reviewNotesList">
+                    <div class="review-empty">暂无相关批注</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="review-section review-config">
+                <h3>⚙️ 配置变化</h3>
+                <div class="review-config-content">
+                  <div class="config-row">
+                    <span class="config-label">声部开关：</span>
+                    <span class="config-value" id="reviewVoices">-</span>
+                  </div>
+                  <div class="config-row">
+                    <span class="config-label">循环范围：</span>
+                    <span class="config-value" id="reviewLoop">-</span>
+                  </div>
+                  <div class="config-row">
+                    <span class="config-label">混音配置：</span>
+                    <span class="config-value" id="reviewMix">-</span>
+                  </div>
+                  <div class="config-row" id="reviewBpmChangesRow" style="display:none;">
+                    <span class="config-label">BPM变化：</span>
+                    <span class="config-value" id="reviewBpmChanges">-</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="review-footer">
+          <button type="button" class="review-action-btn" id="reviewJumpBtn" disabled>🎯 跳转到此处继续练</button>
+          <button type="button" class="review-action-btn secondary" id="reviewCreateNoteBtn" disabled>📝 生成批注任务</button>
+          <button type="button" class="review-action-btn secondary" id="reviewDiagnoseBtn">🔍 诊断薄弱点</button>
+          <button type="button" class="review-action-btn secondary" id="reviewExportBtn">📤 导出复盘数据</button>
+          <button type="button" class="review-cancel-btn" id="reviewCancelBtn">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="create-note-from-review-overlay" id="createNoteFromReviewOverlay" style="display:none;">
+      <div class="create-note-modal">
+        <div class="create-note-header">
+          <h3>📝 从复盘生成批注任务</h3>
+          <button type="button" class="create-note-close-btn" id="createNoteFromReviewCloseBtn">✕</button>
+        </div>
+        <div class="create-note-body">
+          <div class="create-note-info" id="createNoteFromReviewInfo"></div>
+          <div class="create-note-fields">
+            <div class="create-note-field">
+              <label>批注内容：</label>
+              <textarea id="createNoteFromReviewContent" rows="3" placeholder="请输入批注内容..."></textarea>
+            </div>
+            <div class="create-note-field-row">
+              <div class="create-note-field">
+                <label>类型：</label>
+                <select id="createNoteFromReviewType">
+                  <option value="teacher">👨‍🏫 老师批注</option>
+                  <option value="student">👨‍🎓 学生反馈</option>
+                </select>
+              </div>
+              <div class="create-note-field">
+                <label>目标小节：</label>
+                <select id="createNoteFromReviewTarget"></select>
+              </div>
+              <div class="create-note-field">
+                <label>负责人：</label>
+                <select id="createNoteFromReviewAssignee">
+                  <option value="teacher1">张老师</option>
+                  <option value="teacher2">李老师</option>
+                  <option value="student1">学生甲</option>
+                  <option value="student2">学生乙</option>
+                  <option value="student3">学生丙</option>
+                  <option value="other">其他</option>
+                </select>
+              </div>
+              <div class="create-note-field">
+                <label>优先级：</label>
+                <select id="createNoteFromReviewPriority">
+                  <option value="high">🔴 高优先</option>
+                  <option value="medium" selected>🟡 中优先</option>
+                  <option value="low">🟢 低优先</option>
+                </select>
+              </div>
+              <div class="create-note-field">
+                <label>练习目标(次)：</label>
+                <input type="number" id="createNoteFromReviewGoal" min="0" max="100" value="5">
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="create-note-footer">
+          <button type="button" class="create-note-cancel-btn" id="createNoteFromReviewCancelBtn">取消</button>
+          <button type="button" class="create-note-confirm-btn" id="createNoteFromReviewConfirmBtn">✓ 创建批注</button>
+        </div>
+      </div>
+    </div>
 
     <section class="diagnosis-panel" id="diagnosisPanel" style="display: none;">
       <div class="diagnosis-header">

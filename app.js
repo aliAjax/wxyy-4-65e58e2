@@ -1,6 +1,10 @@
 const storageKey = "wxyy-4-luogujing-grid";
 const rehearsalLogKey = "wxyy-4-rehearsal-log";
 const MAX_REHEARSAL_LOG = 50;
+const reviewDetailKey = "wxyy-4-review-detail";
+const REVIEW_STORAGE_LIMIT_BYTES = 5 * 1024 * 1024;
+const REVIEW_SUMMARY_THRESHOLD = 10;
+const SNAPSHOT_INTERVAL_BEATS = 8;
 const instruments = [
   { name: "大锣", token: "仓", freq: 180 },
   { name: "鼓", token: "冬", freq: 120 },
@@ -572,6 +576,423 @@ let tempoTrainer = {
   currentBpmIndex: 0,
   currentSubRound: 0
 };
+
+let reviewState = {
+  active: false,
+  selectedRehearsalId: null,
+  selectedEventIndex: -1,
+  currentEvents: [],
+  currentWeakness: null,
+  autoOpenAfterPlay: true,
+  lastBeatSnapshot: -1,
+  eventBeatCounter: 0,
+  prevBpm: null,
+  prevLoop: null,
+  prevSectionId: null,
+  prevVoices: null,
+  prevMixConfig: null,
+  voiceChangeCount: 0,
+  loopIterationCount: 0
+};
+
+function loadReviewDetailStore() {
+  try {
+    const raw = localStorage.getItem(reviewDetailKey);
+    if (!raw) return {};
+    return JSON.parse(raw) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveReviewDetailStore(store) {
+  try {
+    const serialized = JSON.stringify(store);
+    if (serialized.length > REVIEW_STORAGE_LIMIT_BYTES * 1.5) {
+      console.warn("[Review] 复盘数据过大，开始压缩...");
+      const compressed = compressReviewDetailStore(store);
+      localStorage.setItem(reviewDetailKey, JSON.stringify(compressed));
+    } else {
+      localStorage.setItem(reviewDetailKey, serialized);
+    }
+  } catch (e) {
+    console.error("[Review] 存储复盘数据失败:", e);
+  }
+}
+
+function getReviewDetailStoreSize() {
+  try {
+    const raw = localStorage.getItem(reviewDetailKey);
+    return raw ? new Blob([raw]).size : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function compressReviewDetailStore(store) {
+  const ids = Object.keys(store);
+  if (ids.length <= REVIEW_SUMMARY_THRESHOLD) return store;
+  const sorted = ids
+    .map(id => ({ id, ts: store[id]?.timestamp || 0, events: store[id]?.events?.length || 0 }))
+    .sort((a, b) => new Date(b.ts) - new Date(a.ts));
+  const keepFull = sorted.slice(0, REVIEW_SUMMARY_THRESHOLD);
+  const keepFullIds = new Set(keepFull.map(k => k.id));
+  const result = {};
+  keepFull.forEach(k => {
+    result[k.id] = store[k.id];
+  });
+  sorted.slice(REVIEW_SUMMARY_THRESHOLD).forEach(s => {
+    const original = store[s.id];
+    if (!original) return;
+    result[s.id] = {
+      id: s.id,
+      timestamp: original.timestamp,
+      summaryOnly: true,
+      summary: buildRehearsalSummary(original)
+    };
+  });
+  return result;
+}
+
+function buildRehearsalSummary(detail) {
+  if (!detail) return null;
+  const events = detail.events || [];
+  const pauseEvents = events.filter(e => e.type === "pause");
+  const bpmChanges = events.filter(e => e.type === "bpm");
+  const loopChanges = events.filter(e => e.type === "loop");
+  const voiceChanges = events.filter(e => e.type === "voice");
+  const sectionChanges = events.filter(e => e.type === "section");
+  return {
+    totalEvents: events.length,
+    pauseCount: pauseEvents.length,
+    lastPauseBeat: pauseEvents.length > 0 ? pauseEvents[pauseEvents.length - 1].beat : null,
+    bpmChangeCount: bpmChanges.length,
+    loopChangeCount: loopChanges.length,
+    voiceChangeCount: voiceChanges.length,
+    sectionChangeCount: sectionChanges.length,
+    hasWeakness: !!detail.weakness,
+    durationMs: detail.durationMs || null,
+    mode: detail.mode || "normal"
+  };
+}
+
+function getReviewDetailForRehearsal(rehearsalId) {
+  if (!rehearsalId) return null;
+  const store = loadReviewDetailStore();
+  const detail = store[rehearsalId];
+  if (!detail) return null;
+  if (detail.summaryOnly) {
+    return {
+      id: rehearsalId,
+      timestamp: detail.timestamp,
+      summaryOnly: true,
+      summary: detail.summary,
+      events: [],
+      snapshots: [],
+      weakness: null
+    };
+  }
+  return detail;
+}
+
+function setReviewDetailForRehearsal(rehearsalId, detail) {
+  if (!rehearsalId || !detail) return;
+  const store = loadReviewDetailStore();
+  store[rehearsalId] = detail;
+  cleanupOldReviewDetails(store);
+  saveReviewDetailStore(store);
+}
+
+function cleanupOldReviewDetails(store) {
+  const rehearsalIds = new Set(rehearsalLog.map(r => r.id));
+  Object.keys(store).forEach(id => {
+    if (!rehearsalIds.has(id)) {
+      delete store[id];
+    }
+  });
+}
+
+function initRehearsalDetail() {
+  reviewState.currentEvents = [];
+  reviewState.lastBeatSnapshot = -1;
+  reviewState.eventBeatCounter = 0;
+  reviewState.prevBpm = null;
+  reviewState.prevLoop = null;
+  reviewState.prevSectionId = null;
+  reviewState.prevVoices = null;
+  reviewState.prevMixConfig = null;
+  reviewState.voiceChangeCount = 0;
+  reviewState.loopIterationCount = 0;
+}
+
+function addReviewEvent(type, data, section, beatIndex) {
+  if (!currentRehearsalId) return;
+  const sec = section || getPlaySection() || getCurrentSection();
+  if (!sec) return;
+  const now = Date.now();
+  const elapsed = currentRehearsalStartTime ? now - currentRehearsalStartTime : 0;
+  const totalSteps = getSectionSteps(sec);
+  const clampedBeat = typeof beatIndex === "number"
+    ? Math.max(0, Math.min(beatIndex, totalSteps - 1))
+    : (playhead != null ? playhead : 0);
+  const beat = Math.max(0, Math.min(clampedBeat, totalSteps - 1));
+  const bpm = sec.beatsPerMeasure || 4;
+  const measure = Math.floor(beat / bpm);
+  const beatInMeasure = (beat % bpm) + 1;
+  const event = {
+    id: `evt_${now}_${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    timestamp: new Date(now).toISOString(),
+    elapsedMs: elapsed,
+    sectionId: sec.id,
+    sectionName: sec.name,
+    beat,
+    beatLabel: `${measure + 1}-${beatInMeasure}`,
+    measure,
+    beatInMeasure,
+    data: data || {}
+  };
+  reviewState.currentEvents.push(event);
+  if (type === "snapshot" || reviewState.currentEvents.length === 1) {
+    captureMiniSnapshotForEvent(event, sec, beat);
+  }
+  reviewState.eventBeatCounter++;
+}
+
+function captureMiniSnapshotForEvent(event, section, beat) {
+  try {
+    if (!event) return;
+    const sec = section || getPlaySection() || getCurrentSection();
+    if (!sec || !sec.pattern) return;
+    const totalSteps = getSectionSteps(sec);
+    const bpm = sec.beatsPerMeasure || 4;
+    const measureCount = sec.measureCount || 4;
+    const instrCount = instruments.length;
+    const pattern = [];
+    for (let row = 0; row < instrCount; row++) {
+      const rowData = sec.pattern[row] || [];
+      const rowArr = [];
+      const len = Math.max(rowData.length, totalSteps || 0);
+      for (let i = 0; i < len; i++) {
+        rowArr.push(rowData[i] ? 1 : 0);
+      }
+      pattern.push(rowArr);
+    }
+    if (pattern.length === 0 || (pattern[0] && pattern[0].length === 0)) return;
+    let enabled = [true, true, true, true];
+    if (Array.isArray(sec.enabledInstruments)) {
+      enabled = [...sec.enabledInstruments];
+      while (enabled.length < instrCount) enabled.push(true);
+    }
+    const snapshot = {
+      eventId: event.id,
+      timestamp: event.timestamp,
+      sectionId: sec.id,
+      pattern,
+      enabledInstruments: enabled,
+      currentBeat: typeof beat === "number" ? beat : (playhead != null ? playhead : 0),
+      bpm: sec.bpm,
+      measureCount,
+      beatsPerMeasure: bpm,
+      totalSteps
+    };
+    event.miniSnapshot = snapshot;
+  } catch (e) {
+    console.warn("[Review] 快照采集失败:", e);
+  }
+}
+
+function checkAndRecordChanges(section, beat) {
+  const sec = section || getPlaySection() || getCurrentSection();
+  if (!sec) return;
+  if (reviewState.prevBpm !== null && sec.bpm !== reviewState.prevBpm) {
+    addReviewEvent("bpm", {
+      from: reviewState.prevBpm,
+      to: sec.bpm,
+      delta: sec.bpm - reviewState.prevBpm
+    }, sec, beat);
+  }
+  reviewState.prevBpm = sec.bpm;
+  if (reviewState.prevLoop !== null && sec.loop !== reviewState.prevLoop) {
+    reviewState.loopIterationCount++;
+    addReviewEvent("loop", {
+      from: reviewState.prevLoop,
+      to: sec.loop,
+      iteration: reviewState.loopIterationCount
+    }, sec, beat);
+  }
+  reviewState.prevLoop = sec.loop;
+  if (reviewState.prevSectionId !== null && sec.id !== reviewState.prevSectionId) {
+    addReviewEvent("section", {
+      fromId: reviewState.prevSectionId,
+      toId: sec.id,
+      toName: sec.name
+    }, sec, beat);
+  }
+  reviewState.prevSectionId = sec.id;
+  const voicesKey = (sec.enabledInstruments || []).join(",");
+  if (reviewState.prevVoices !== null && voicesKey !== reviewState.prevVoices) {
+    reviewState.voiceChangeCount++;
+    const changes = instruments.map((inst, idx) => {
+      const prev = reviewState.prevVoices ? reviewState.prevVoices.split(",")[idx] === "true" : true;
+      const curr = sec.enabledInstruments[idx];
+      if (prev !== curr) {
+        return { name: inst.name, from: prev, to: curr };
+      }
+      return null;
+    }).filter(Boolean);
+    addReviewEvent("voice", {
+      count: reviewState.voiceChangeCount,
+      changes,
+      voices: [...sec.enabledInstruments]
+    }, sec, beat);
+  }
+  reviewState.prevVoices = voicesKey;
+  const mixKey = JSON.stringify(sec.mixConfig);
+  if (reviewState.prevMixConfig !== null && mixKey !== reviewState.prevMixConfig) {
+    addReviewEvent("mix", {
+      mixConfig: deepCloneMixConfig(sec.mixConfig)
+    }, sec, beat);
+  }
+  reviewState.prevMixConfig = mixKey;
+  if (beat - reviewState.lastBeatSnapshot >= SNAPSHOT_INTERVAL_BEATS || reviewState.lastBeatSnapshot === -1) {
+    addReviewEvent("snapshot", {}, sec, beat);
+    reviewState.lastBeatSnapshot = beat;
+  }
+}
+
+function finalizeRehearsalDetail(pauseBeat, mode) {
+  if (!currentRehearsalId) return null;
+  try {
+    if (pauseBeat != null) {
+      const sec = getPlaySection() || getCurrentSection();
+      addReviewEvent("pause", {
+        completed: pauseBeat == null,
+        finalBeat: pauseBeat
+      }, sec, pauseBeat);
+    } else {
+      addReviewEvent("end", { completed: true });
+    }
+    const now = Date.now();
+    const durationMs = currentRehearsalStartTime ? now - currentRehearsalStartTime : 0;
+    const weakness = diagnoseWeaknessFromEvents(reviewState.currentEvents);
+    const detail = {
+      id: currentRehearsalId,
+      timestamp: new Date().toISOString(),
+      mode: mode || (tempoTrainer.active ? "tempo" : (state.continuousPlay ? "continuous" : "normal")),
+      durationMs,
+      events: reviewState.currentEvents,
+      weakness
+    };
+    setReviewDetailForRehearsal(currentRehearsalId, detail);
+    return detail;
+  } catch (e) {
+    console.error("[Review] 复盘数据保存失败:", e);
+    return null;
+  }
+}
+
+function diagnoseWeaknessFromEvents(events) {
+  if (!events || events.length === 0) return null;
+  const pauseBeats = events
+    .filter(e => e.type === "pause")
+    .map(e => ({ ...e, reason: e.data?.reason || "manual" }));
+  const bpmChanges = events.filter(e => e.type === "bpm");
+  const loopEvents = events.filter(e => e.type === "loop");
+  const voiceChanges = events.filter(e => e.type === "voice");
+  const sectionChanges = events.filter(e => e.type === "section");
+  const beatCountMap = {};
+  events.forEach(e => {
+    if (typeof e.beat === "number") {
+      const key = `${e.sectionId || "default"}:${e.beat}`;
+      if (!beatCountMap[key]) {
+        beatCountMap[key] = { sectionId: e.sectionId, beat: e.beat, count: 0, eventTypes: new Set() };
+      }
+      beatCountMap[key].count++;
+      beatCountMap[key].eventTypes.add(e.type);
+    }
+  });
+  const weakPoints = [];
+  pauseBeats.forEach(e => {
+    weakPoints.push({
+      type: "pause",
+      sectionId: e.sectionId,
+      beat: e.beat,
+      beatLabel: e.beatLabel,
+      severity: pauseBeats.length >= 3 ? "high" : (pauseBeats.length >= 2 ? "medium" : "low"),
+      score: 80 + Math.min(pauseBeats.length * 5, 20),
+      reason: "频繁暂停",
+      description: `在${e.beatLabel}处暂停，可能此处节奏不熟悉`
+    });
+  });
+  Object.values(beatCountMap).forEach(bc => {
+    if (bc.eventTypes.has("snapshot") && bc.eventTypes.size > 2 && bc.count > 3) {
+      const exists = weakPoints.some(w => w.beat === bc.beat && w.sectionId === bc.sectionId);
+      if (!exists) {
+        weakPoints.push({
+          type: "cluster",
+          sectionId: bc.sectionId,
+          beat: bc.beat,
+          severity: bc.count > 5 ? "high" : "medium",
+          score: bc.count * 10,
+          reason: "事件集中",
+          description: `第${Math.floor(bc.beat / 4) + 1}小节附近有多个状态变化事件，可能是练习难点`
+        });
+      }
+    }
+  });
+  if (loopEvents.length > 4) {
+    const lastLoop = loopEvents[loopEvents.length - 1];
+    weakPoints.push({
+      type: "loop",
+      sectionId: lastLoop.sectionId,
+      beat: lastLoop.beat,
+      beatLabel: lastLoop.beatLabel,
+      severity: loopEvents.length > 8 ? "high" : "medium",
+      score: loopEvents.length * 6,
+      reason: "反复循环",
+      description: `循环练习${loopEvents.length}次，建议加强此段落练习`
+    });
+  }
+  if (voiceChanges.length > 2) {
+    const last = voiceChanges[voiceChanges.length - 1];
+    weakPoints.push({
+      type: "voice",
+      sectionId: last.sectionId,
+      beat: last.beat,
+      beatLabel: last.beatLabel,
+      severity: voiceChanges.length > 4 ? "high" : "low",
+      score: voiceChanges.length * 8,
+      reason: "声部调整",
+      description: `反复切换声部（${voiceChanges.length}次），可能在排查声部配合问题`
+    });
+  }
+  const severityWeight = { high: 3, medium: 2, low: 1 };
+  const totalScore = weakPoints.reduce((s, w) => s + w.score * severityWeight[w.severity], 0);
+  const maxPossibleScore = 100 * 10;
+  const stabilityScore = Math.max(0, Math.min(100, Math.round(100 - (totalScore / maxPossibleScore) * 100)));
+  let level = "good";
+  let desc = "本次排练整体稳定";
+  if (stabilityScore < 50) { level = "poor"; desc = "存在较多薄弱点，建议针对性强化"; }
+  else if (stabilityScore < 75) { level = "fair"; desc = "有进步空间，部分段落需加强"; }
+  else if (stabilityScore < 90) { level = "good"; desc = "整体稳定，少量细节可提升"; }
+  else { level = "excellent"; desc = "表现优秀，排练效果出色！"; }
+  weakPoints.sort((a, b) => b.score - a.score);
+  return {
+    stabilityScore,
+    level,
+    description: desc,
+    weakPoints: weakPoints.slice(0, 8),
+    stats: {
+      pauseCount: pauseBeats.length,
+      bpmChangeCount: bpmChanges.length,
+      loopCount: loopEvents.length,
+      voiceChangeCount: voiceChanges.length,
+      sectionChangeCount: sectionChanges.length,
+      totalEvents: events.length
+    }
+  };
+}
 
 const grid = document.querySelector("#grid");
 const savedList = document.querySelector("#savedList");
@@ -2398,6 +2819,10 @@ function tick() {
     }
   });
 
+  if (currentRehearsalId) {
+    checkAndRecordChanges(section, playhead);
+  }
+
   if (playhead >= end) {
     if (state.continuousPlay && state.sections.length > 1) {
       const nextIndex = currentPlaySectionIndex + 1;
@@ -2474,11 +2899,22 @@ function startPlayback() {
 
   currentRehearsalId = crypto.randomUUID();
   currentRehearsalStartTime = Date.now();
+  initRehearsalDetail();
+  reviewState.prevBpm = section.bpm;
+  reviewState.prevLoop = section.loop;
+  reviewState.prevSectionId = section.id;
+  reviewState.prevVoices = (section.enabledInstruments || []).join(",");
+  reviewState.prevMixConfig = JSON.stringify(section.mixConfig || createDefaultMixConfig());
   const activeVoices = instruments
     .filter((_, idx) => section.enabledInstruments[idx])
     .map((i) => i.name);
   const loopLabel = section.loop === "" ? "全段" : `第${Number(section.loop) + 1}小节`;
   section.mixConfig = section.mixConfig || createDefaultMixConfig();
+  addReviewEvent("start", {
+    mode: state.continuousPlay ? "continuous" : "normal",
+    initialBpm: section.bpm,
+    initialLoop: loopLabel
+  }, section, playhead);
   rehearsalLog.unshift({
     id: currentRehearsalId,
     timestamp: new Date().toISOString(),
@@ -2523,6 +2959,9 @@ function stopPlayback() {
   timer = null;
   document.querySelectorAll(".cell.playing").forEach((cell) => cell.classList.remove("playing"));
 
+  let finalPauseBeat = null;
+  let finalRehearsalIdToReview = null;
+
   if (currentRehearsalId) {
     const entry = rehearsalLog.find((r) => r.id === currentRehearsalId);
     if (entry) {
@@ -2533,6 +2972,7 @@ function stopPlayback() {
         const [start, end] = currentRange(currentPlayedSection);
         if (playhead >= start && playhead <= end) {
           entry.pausePosition = playhead;
+          finalPauseBeat = playhead;
           const beatStr = beatLabelForSection(currentPlayedSection, playhead);
           entry.pauseLabel = currentPlayedSection.id !== entry.sectionId
             ? `${currentPlayedSection.name} · ${beatStr}`
@@ -2555,6 +2995,11 @@ function stopPlayback() {
 
       saveRehearsalLog();
     }
+
+    const mode = state.continuousPlay ? "continuous" : "normal";
+    finalizeRehearsalDetail(finalPauseBeat, mode);
+    finalRehearsalIdToReview = currentRehearsalId;
+
     currentRehearsalId = null;
     currentRehearsalStartTime = null;
   }
@@ -2566,6 +3011,14 @@ function stopPlayback() {
 
   renderDashboard();
   renderRehearsalTimeline();
+
+  if (finalRehearsalIdToReview && reviewState.autoOpenAfterPlay) {
+    setTimeout(() => {
+      if (confirm("排练结束，是否进入复盘模式查看详细记录？")) {
+        openReviewOverlay(finalRehearsalIdToReview);
+      }
+    }, 300);
+  }
 }
 
 grid.addEventListener("click", (event) => {
@@ -4522,11 +4975,23 @@ function startTempoTrainer() {
 
   currentRehearsalId = crypto.randomUUID();
   currentRehearsalStartTime = Date.now();
+  initRehearsalDetail();
+  reviewState.prevBpm = section.bpm;
+  reviewState.prevLoop = tempoTrainer.originalLoop;
+  reviewState.prevSectionId = section.id;
+  reviewState.prevVoices = (section.enabledInstruments || []).join(",");
+  reviewState.prevMixConfig = JSON.stringify(section.mixConfig || createDefaultMixConfig());
   const activeVoices = instruments
     .filter((_, idx) => section.enabledInstruments[idx])
     .map((i) => i.name);
   const loopLabel = tempoTrainer.originalLoop === "" ? "全段" : `第${Number(tempoTrainer.originalLoop) + 1}小节`;
   section.mixConfig = section.mixConfig || createDefaultMixConfig();
+  addReviewEvent("start", {
+    mode: "tempo",
+    initialBpm: tempoTrainer.bpmSteps[0],
+    bpmSteps: [...tempoTrainer.bpmSteps],
+    totalRounds: tempoTrainer.totalRounds
+  }, section, playhead);
   rehearsalLog.unshift({
     id: currentRehearsalId,
     timestamp: new Date().toISOString(),
@@ -4580,14 +5045,26 @@ function tempoTrainerTick() {
     }
   });
 
+  if (currentRehearsalId) {
+    checkAndRecordChanges(section, playhead);
+  }
+
   tempoTrainer.beatsRemaining--;
   updateTempoStatusDisplay();
 
   if (playhead >= end) {
     tempoTrainer.currentSubRound++;
-
     tempoTrainer.currentRound++;
     tempoTrainer.beatsRemaining = tempoTrainer.totalBeatsPerRound;
+
+    if (currentRehearsalId) {
+      addReviewEvent("round", {
+        currentRound: tempoTrainer.currentRound,
+        currentSubRound: tempoTrainer.currentSubRound,
+        currentBpmIndex: tempoTrainer.currentBpmIndex,
+        bpm: section.bpm
+      }, section, end);
+    }
 
     if (tempoTrainer.currentSubRound >= tempoTrainer.roundsPerBpm) {
       tempoTrainer.currentBpmIndex++;
@@ -4599,6 +5076,15 @@ function tempoTrainerTick() {
       }
 
       const nextBpm = tempoTrainer.bpmSteps[tempoTrainer.currentBpmIndex];
+      if (currentRehearsalId) {
+        addReviewEvent("bpm", {
+          from: section.bpm,
+          to: nextBpm,
+          delta: nextBpm - section.bpm,
+          tempoStep: true,
+          bpmIndex: tempoTrainer.currentBpmIndex
+        }, section, start);
+      }
       section.bpm = nextBpm;
       bpmInput.value = nextBpm;
       save();
@@ -4650,6 +5136,7 @@ function stopTempoTrainer() {
     save();
   }
 
+  let finalRehearsalIdToReview = null;
   if (currentRehearsalId) {
     const entry = rehearsalLog.find((r) => r.id === currentRehearsalId);
     if (entry) {
@@ -4661,6 +5148,10 @@ function stopTempoTrainer() {
       }
       saveRehearsalLog();
     }
+
+    finalizeRehearsalDetail(null, "tempo");
+    finalRehearsalIdToReview = currentRehearsalId;
+
     currentRehearsalId = null;
     currentRehearsalStartTime = null;
   }
@@ -4684,6 +5175,14 @@ function stopTempoTrainer() {
   renderDashboard();
   renderRehearsalTimeline();
   render();
+
+  if (finalRehearsalIdToReview && reviewState.autoOpenAfterPlay) {
+    setTimeout(() => {
+      if (confirm("变速训练结束，是否进入复盘模式查看详细记录？")) {
+        openReviewOverlay(finalRehearsalIdToReview);
+      }
+    }, 300);
+  }
 }
 
 function finishTempoTrainer() {
@@ -9552,5 +10051,750 @@ mergeNextConflictBtn.addEventListener("click", () => {
     mergeConflictProgressEl.textContent = `${currentConflictIndex + 1} / ${mergeState.conflicts.length}`;
     mergePrevConflictBtn.disabled = currentConflictIndex <= 0;
     mergeNextConflictBtn.disabled = currentConflictIndex >= mergeState.conflicts.length - 1;
+  }
+});
+
+/* ==================== 排练复盘视图 UI 和交互 ==================== */
+
+const reviewOverlay = document.querySelector("#reviewOverlay");
+const reviewCloseBtn = document.querySelector("#reviewCloseBtn");
+const reviewCancelBtn = document.querySelector("#reviewCancelBtn");
+const reviewReviewBtn = document.querySelector("#rehearsalReviewBtn");
+const reviewRecordList = document.querySelector("#reviewRecordList");
+const reviewEmptyState = document.querySelector("#reviewEmptyState");
+const reviewContent = document.querySelector("#reviewContent");
+const reviewStorageInfo = document.querySelector("#reviewStorageInfo");
+const reviewPieceName = document.querySelector("#reviewPieceName");
+const reviewSectionName = document.querySelector("#reviewSectionName");
+const reviewBpmEl = document.querySelector("#reviewBpm");
+const reviewDurationEl = document.querySelector("#reviewDuration");
+const reviewPauseLabelEl = document.querySelector("#reviewPauseLabel");
+const reviewModeEl = document.querySelector("#reviewMode");
+const timelineRuler = document.querySelector("#timelineRuler");
+const timelineTrack = document.querySelector("#timelineTrack");
+const timelineCursor = document.querySelector("#timelineCursor");
+const timelinePosition = document.querySelector("#timelinePosition");
+const timelinePrevBtn = document.querySelector("#timelinePrevBtn");
+const timelineNextBtn = document.querySelector("#timelineNextBtn");
+const reviewEventList = document.querySelector("#reviewEventList");
+const reviewSnapshotMini = document.querySelector("#reviewSnapshotMini");
+const reviewSnapshotDetail = document.querySelector("#reviewSnapshotDetail");
+const reviewWeaknessContent = document.querySelector("#reviewWeaknessContent");
+const reviewNotesList = document.querySelector("#reviewNotesList");
+const reviewVoicesEl = document.querySelector("#reviewVoices");
+const reviewLoopEl = document.querySelector("#reviewLoop");
+const reviewMixEl = document.querySelector("#reviewMix");
+const reviewBpmChangesRow = document.querySelector("#reviewBpmChangesRow");
+const reviewBpmChangesEl = document.querySelector("#reviewBpmChanges");
+const reviewJumpBtn = document.querySelector("#reviewJumpBtn");
+const reviewCreateNoteBtn = document.querySelector("#reviewCreateNoteBtn");
+const reviewDiagnoseBtn = document.querySelector("#reviewDiagnoseBtn");
+const reviewExportBtn = document.querySelector("#reviewExportBtn");
+
+const createNoteFromReviewOverlay = document.querySelector("#createNoteFromReviewOverlay");
+const createNoteFromReviewCloseBtn = document.querySelector("#createNoteFromReviewCloseBtn");
+const createNoteFromReviewCancelBtn = document.querySelector("#createNoteFromReviewCancelBtn");
+const createNoteFromReviewConfirmBtn = document.querySelector("#createNoteFromReviewConfirmBtn");
+const createNoteFromReviewInfo = document.querySelector("#createNoteFromReviewInfo");
+const createNoteFromReviewContentEl = document.querySelector("#createNoteFromReviewContent");
+const createNoteFromReviewTypeEl = document.querySelector("#createNoteFromReviewType");
+const createNoteFromReviewTargetEl = document.querySelector("#createNoteFromReviewTarget");
+const createNoteFromReviewAssigneeEl = document.querySelector("#createNoteFromReviewAssignee");
+const createNoteFromReviewPriorityEl = document.querySelector("#createNoteFromReviewPriority");
+const createNoteFromReviewGoalEl = document.querySelector("#createNoteFromReviewGoal");
+
+let currentReviewDetail = null;
+let currentReviewRehearsalEntry = null;
+
+function formatDuration(ms) {
+  if (ms == null || isNaN(ms)) return "—";
+  const totalSec = Math.round(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  if (m > 0) return `${m}分${s}秒`;
+  return `${s}秒`;
+}
+
+function formatTimestamp(ts) {
+  try {
+    const d = new Date(ts);
+    return d.toLocaleString("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+  } catch {
+    return ts;
+  }
+}
+
+function formatElapsed(ms) {
+  if (ms == null) return "0s";
+  const totalSec = Math.round(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  if (m > 0) return `${m}:${s.toString().padStart(2, "0")}`;
+  return `${s}s`;
+}
+
+function getEventIcon(type) {
+  const map = {
+    start: "▶",
+    end: "⏹",
+    pause: "⏸",
+    bpm: "⚡",
+    section: "📑",
+    loop: "🔁",
+    voice: "🎚️",
+    mix: "🎛️",
+    snapshot: "📷",
+    round: "🔄"
+  };
+  return map[type] || "•";
+}
+
+function getEventTitle(e) {
+  switch (e.type) {
+    case "start": return "开始播放";
+    case "end": return "播放结束";
+    case "pause": return e.data?.completed ? "播放完成" : "暂停";
+    case "bpm": return `BPM变化 ${e.data?.from} → ${e.data?.to}`;
+    case "section": return `切换段落: ${e.data?.toName || "未知"}`;
+    case "loop": return `循环变化 (第${e.data?.iteration || 0}次)`;
+    case "voice": return `声部开关变更`;
+    case "mix": return `混音配置变更`;
+    case "snapshot": return `谱面快照`;
+    case "round": return `完成轮次 ${e.data?.currentRound || 0}`;
+    default: return e.type;
+  }
+}
+
+function getEventDetail(e) {
+  switch (e.type) {
+    case "start":
+      return `模式: ${e.data?.mode === "tempo" ? "变速训练" : e.data?.mode === "continuous" ? "连续播放" : "普通播放"}, 初始BPM: ${e.data?.initialBpm}`;
+    case "bpm":
+      return `${e.data?.delta > 0 ? "↑" : "↓"} ${Math.abs(e.data?.delta || 0)} BPM${e.data?.tempoStep ? " (变速阶梯)" : ""}`;
+    case "loop":
+      return `范围: ${e.data?.to === "" ? "全段" : "第" + (Number(e.data?.to) + 1) + "小节"}`;
+    case "voice":
+      const ch = (e.data?.changes || []).map(c => `${c.name}: ${c.from ? "开" : "关"}→${c.to ? "开" : "关"}`).join(", ");
+      return ch || "声部配置变化";
+    case "round":
+      return `BPM: ${e.data?.bpm}, 子轮: ${e.data?.currentSubRound || 0}`;
+    case "snapshot":
+      return `每${SNAPSHOT_INTERVAL_BEATS}拍自动采集`;
+    default:
+      return "";
+  }
+}
+
+function openReviewOverlay(rehearsalId) {
+  if (rehearsalLog.length === 0) {
+    alert("暂无排练记录，播放一次后即可使用复盘功能。");
+    return;
+  }
+  reviewState.active = true;
+  reviewState.selectedEventIndex = -1;
+  currentReviewDetail = null;
+  currentReviewRehearsalEntry = null;
+  updateStorageInfo();
+  renderReviewRecordList();
+  if (rehearsalId) {
+    selectReviewRecord(rehearsalId);
+  } else {
+    reviewEmptyState.style.display = "flex";
+    reviewContent.style.display = "none";
+    reviewJumpBtn.disabled = true;
+    reviewCreateNoteBtn.disabled = true;
+  }
+  reviewOverlay.style.display = "flex";
+}
+
+function closeReviewOverlay() {
+  reviewState.active = false;
+  reviewState.selectedRehearsalId = null;
+  reviewState.selectedEventIndex = -1;
+  currentReviewDetail = null;
+  currentReviewRehearsalEntry = null;
+  reviewOverlay.style.display = "none";
+  createNoteFromReviewOverlay.style.display = "none";
+}
+
+function updateStorageInfo() {
+  try {
+    const size = getReviewDetailStoreSize();
+    const rehearsalCount = rehearsalLog.length;
+    const detailStore = loadReviewDetailStore();
+    const fullCount = Object.values(detailStore).filter(d => !d.summaryOnly).length;
+    const summaryCount = Object.values(detailStore).filter(d => d.summaryOnly).length;
+    const sizeKB = Math.round(size / 1024);
+    const sizeMB = (size / 1024 / 1024).toFixed(1);
+    const sizeStr = sizeKB > 1024 ? `${sizeMB}MB` : `${sizeKB}KB`;
+    const limitMB = (REVIEW_STORAGE_LIMIT_BYTES / 1024 / 1024).toFixed(0);
+    reviewStorageInfo.textContent = `排练:${rehearsalCount}条 | 复盘数据:${sizeStr}/${limitMB}MB (完整:${fullCount} 摘要:${summaryCount})`;
+  } catch {
+    reviewStorageInfo.textContent = "";
+  }
+}
+
+function renderReviewRecordList() {
+  if (rehearsalLog.length === 0) {
+    reviewRecordList.innerHTML = `<div class="review-empty">暂无排练记录</div>`;
+    return;
+  }
+  const detailStore = loadReviewDetailStore();
+  reviewRecordList.innerHTML = rehearsalLog.map((entry, idx) => {
+    const detail = detailStore[entry.id];
+    const hasEvents = detail && !detail.summaryOnly && Array.isArray(detail.events) && detail.events.length > 0;
+    const isSummaryOnly = detail && detail.summaryOnly;
+    const modeClass = entry.snapshot?.continuousPlay ? "mode-continuous" :
+      (detail && detail.mode === "tempo") ? "mode-tempo" : "mode-normal";
+    const modeLabel = entry.snapshot?.continuousPlay ? "连续" :
+      (detail && detail.mode === "tempo") ? "变速" : "普通";
+    const tags = [
+      `<span class="record-item-tag ${modeClass}">${modeLabel}</span>`,
+      `<span class="record-item-tag">${entry.bpm}BPM</span>`
+    ];
+    if (hasEvents) tags.push(`<span class="record-item-tag has-events">${detail.events.length}事件</span>`);
+    if (isSummaryOnly) tags.push(`<span class="record-item-tag">仅摘要</span>`);
+    const isActive = reviewState.selectedRehearsalId === entry.id;
+    return `
+      <div class="review-record-item ${isActive ? "active" : ""}" data-review-record="${entry.id}">
+        <div class="record-item-title">${idx + 1}. ${entry.sectionName || "未命名段落"}</div>
+        <div class="record-item-meta">
+          <span>${formatTimestamp(entry.timestamp)}</span>
+          <span>${entry.durationMs ? formatDuration(entry.durationMs) : "未完成"}</span>
+          ${tags.join("")}
+        </div>
+      </div>
+    `;
+  }).join("");
+  reviewRecordList.querySelectorAll("[data-review-record]").forEach(el => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.reviewRecord;
+      selectReviewRecord(id);
+    });
+  });
+}
+
+function selectReviewRecord(rehearsalId) {
+  const entry = rehearsalLog.find(r => r.id === rehearsalId);
+  if (!entry) return;
+  reviewState.selectedRehearsalId = rehearsalId;
+  reviewState.selectedEventIndex = -1;
+  currentReviewRehearsalEntry = entry;
+  currentReviewDetail = getReviewDetailForRehearsal(rehearsalId);
+  reviewEmptyState.style.display = "none";
+  reviewContent.style.display = "block";
+  renderReviewSummary(entry, currentReviewDetail);
+  renderReviewTimeline(entry, currentReviewDetail);
+  renderReviewEventList(entry, currentReviewDetail);
+  renderReviewConfig(entry, currentReviewDetail);
+  renderReviewRelatedNotes(entry, currentReviewDetail);
+  if (currentReviewDetail && currentReviewDetail.weakness) {
+    renderReviewWeakness(currentReviewDetail.weakness);
+  } else {
+    reviewWeaknessContent.innerHTML = `<div class="review-empty">尚未分析，点击「诊断薄弱点」开始分析</div>`;
+  }
+  reviewSnapshotMini.innerHTML = `<div class="review-empty">从左侧选择事件查看快照</div>`;
+  reviewSnapshotDetail.style.display = "none";
+  reviewJumpBtn.disabled = true;
+  reviewCreateNoteBtn.disabled = true;
+  renderReviewRecordList();
+}
+
+function renderReviewSummary(entry, detail) {
+  reviewPieceName.textContent = entry.pieceName || state.pieceName || "未命名";
+  reviewSectionName.textContent = entry.sectionName || "未命名段落";
+  reviewBpmEl.textContent = `${entry.bpm} BPM`;
+  reviewDurationEl.textContent = formatDuration(entry.durationMs || (detail && detail.durationMs));
+  reviewPauseLabelEl.textContent = entry.pauseLabel || "—";
+  const mode = detail?.mode || (entry.snapshot?.continuousPlay ? "continuous" : "normal");
+  const modeMap = {
+    normal: "🎵 普通播放",
+    continuous: "🔗 连续播放",
+    tempo: "⏱️ 变速训练"
+  };
+  reviewModeEl.textContent = modeMap[mode] || mode;
+}
+
+function renderReviewTimeline(entry, detail) {
+  const section = (entry.snapshot && entry.snapshot.sections && entry.snapshot.sections[0]) ||
+    state.sections.find(s => s.id === entry.sectionId) ||
+    getCurrentSection();
+  if (!section) {
+    timelineRuler.innerHTML = "";
+    timelineTrack.innerHTML = "";
+    return;
+  }
+  const beatsPerMeasure = section.beatsPerMeasure || 4;
+  const measureCount = section.measureCount || 4;
+  const totalSteps = getSectionSteps(section);
+  let rulerHtml = "";
+  for (let i = 0; i < totalSteps; i++) {
+    const measure = Math.floor(i / beatsPerMeasure);
+    const beat = (i % beatsPerMeasure) + 1;
+    const isMeasureStart = beat === 1;
+    rulerHtml += `<div class="timeline-ruler-segment ${isMeasureStart ? "is-measure-start" : ""}">${isMeasureStart ? `M${measure + 1}` : beat}</div>`;
+  }
+  timelineRuler.innerHTML = rulerHtml;
+  const events = detail && Array.isArray(detail.events) ? detail.events : [];
+  if (events.length === 0) {
+    timelineTrack.innerHTML = `<div class="review-empty" style="height:64px;display:flex;align-items:center;">无事件数据（可能为摘要记录）</div>`;
+    timelineCursor.style.display = "none";
+    timelinePosition.textContent = `—`;
+    return;
+  }
+  let trackHtml = "";
+  events.forEach((evt, idx) => {
+    const beat = Math.max(0, Math.min(typeof evt.beat === "number" ? evt.beat : 0, totalSteps - 1));
+    const leftPct = (beat / Math.max(1, totalSteps - 1)) * 100;
+    const isActive = idx === reviewState.selectedEventIndex;
+    trackHtml += `<div class="timeline-event event-${evt.type} ${isActive ? "active" : ""}" 
+      title="${getEventTitle(evt)} - ${evt.beatLabel}" 
+      style="left: ${leftPct}%;"
+      data-timeline-event="${idx}">${getEventIcon(evt.type)}</div>`;
+  });
+  timelineTrack.innerHTML = trackHtml;
+  timelineTrack.querySelectorAll("[data-timeline-event]").forEach(el => {
+    el.addEventListener("click", () => {
+      const idx = Number(el.dataset.timelineEvent);
+      selectReviewEvent(idx);
+    });
+  });
+  timelineCursor.style.display = "none";
+  updateTimelineNav();
+}
+
+function updateTimelineNav() {
+  const events = currentReviewDetail?.events || [];
+  const hasEvents = events.length > 0;
+  timelinePrevBtn.disabled = !hasEvents || reviewState.selectedEventIndex <= 0;
+  timelineNextBtn.disabled = !hasEvents || reviewState.selectedEventIndex >= events.length - 1;
+  if (reviewState.selectedEventIndex >= 0 && hasEvents && events[reviewState.selectedEventIndex]) {
+    const evt = events[reviewState.selectedEventIndex];
+    timelinePosition.textContent = `${evt.beatLabel} · ${getEventTitle(evt)} · ${formatElapsed(evt.elapsedMs)}`;
+  } else {
+    timelinePosition.textContent = hasEvents ? `${events.length} 个事件 · 选择查看` : "无事件数据";
+  }
+}
+
+function renderReviewEventList(entry, detail) {
+  const events = detail && Array.isArray(detail.events) ? detail.events : [];
+  if (events.length === 0) {
+    reviewEventList.innerHTML = `<div class="review-empty">暂无事件数据（可能为摘要记录）</div>`;
+    return;
+  }
+  reviewEventList.innerHTML = events.map((evt, idx) => {
+    const isActive = idx === reviewState.selectedEventIndex;
+    return `
+      <div class="event-item ${isActive ? "active" : ""}" data-event-index="${idx}">
+        <div class="event-icon ${evt.type}">${getEventIcon(evt.type)}</div>
+        <div class="event-content">
+          <div class="event-title">${getEventTitle(evt)}</div>
+          <div class="event-detail">${evt.beatLabel} · ${getEventDetail(evt)}</div>
+        </div>
+        <div class="event-time">${formatElapsed(evt.elapsedMs)}</div>
+      </div>
+    `;
+  }).join("");
+  reviewEventList.querySelectorAll("[data-event-index]").forEach(el => {
+    el.addEventListener("click", () => {
+      const idx = Number(el.dataset.eventIndex);
+      selectReviewEvent(idx);
+    });
+  });
+}
+
+function selectReviewEvent(idx) {
+  const events = currentReviewDetail?.events || [];
+  if (idx < 0 || idx >= events.length) return;
+  reviewState.selectedEventIndex = idx;
+  const evt = events[idx];
+  renderReviewEventList(currentReviewRehearsalEntry, currentReviewDetail);
+  renderReviewTimeline(currentReviewRehearsalEntry, currentReviewDetail);
+  const section = (currentReviewRehearsalEntry?.snapshot?.sections?.[0]) ||
+    state.sections.find(s => s.id === currentReviewRehearsalEntry?.sectionId) ||
+    getCurrentSection();
+  if (section && typeof evt.beat === "number") {
+    const totalSteps = getSectionSteps(section);
+    const beat = Math.max(0, Math.min(evt.beat, totalSteps - 1));
+    const leftPct = (beat / Math.max(1, totalSteps - 1)) * 100;
+    timelineCursor.style.left = `calc(${leftPct}% + 0px)`;
+    timelineCursor.style.display = "block";
+  }
+  renderReviewSnapshot(evt, section);
+  reviewJumpBtn.disabled = false;
+  reviewCreateNoteBtn.disabled = false;
+  updateTimelineNav();
+}
+
+function renderReviewSnapshot(evt, section) {
+  const snap = evt?.miniSnapshot;
+  const sec = section ||
+    (currentReviewRehearsalEntry?.snapshot?.sections?.[0]) ||
+    state.sections.find(s => s.id === currentReviewRehearsalEntry?.sectionId) ||
+    getCurrentSection();
+  if (!snap && !sec) {
+    reviewSnapshotMini.innerHTML = `<div class="review-empty">无快照数据</div>`;
+    reviewSnapshotDetail.style.display = "none";
+    return;
+  }
+  const pattern = snap?.pattern || (sec?.pattern || []).map(row => row.map(v => v ? 1 : 0));
+  const enabledInstruments = snap?.enabledInstruments || sec?.enabledInstruments || [true, true, true, true];
+  const bpm = snap?.beatsPerMeasure || sec?.beatsPerMeasure || 4;
+  const totalSteps = snap?.totalSteps || getSectionSteps(sec);
+  const currentBeat = snap?.currentBeat ?? (typeof evt?.beat === "number" ? evt.beat : -1);
+  let gridHtml = "";
+  const cols = totalSteps + 1;
+  let miniHtml = `<div class="snapshot-mini-grid" style="grid-template-columns: 60px repeat(${totalSteps}, 1fr);">`;
+  for (let r = -1; r < instruments.length; r++) {
+    for (let c = 0; c <= totalSteps; c++) {
+      if (c === 0) {
+        if (r === -1) {
+          miniHtml += `<div class="snapshot-mini-cell label"></div>`;
+        } else {
+          miniHtml += `<div class="snapshot-mini-cell label ${!enabledInstruments[r] ? "muted" : ""}">${instruments[r].token}</div>`;
+        }
+      } else {
+        const step = c - 1;
+        const isMeasureStart = step % bpm === 0;
+        if (r === -1) {
+          const beatLabel = Math.floor(step / bpm) + 1;
+          miniHtml += `<div class="snapshot-mini-cell label ${isMeasureStart ? "measure-start" : ""}">${isMeasureStart ? beatLabel : (step % bpm) + 1}</div>`;
+        } else {
+          const filled = pattern[r] && pattern[r][step] === 1;
+          const playing = step === currentBeat;
+          miniHtml += `<div class="snapshot-mini-cell ${filled ? "filled" : ""} ${playing ? "playing" : ""} ${!enabledInstruments[r] ? "muted" : ""} ${isMeasureStart ? "measure-start" : ""}">${filled ? instruments[r].token : ""}</div>`;
+        }
+      }
+    }
+  }
+  miniHtml += `</div>`;
+  const snapInfo = snap || {};
+  const infoHtml = `
+    <div class="snapshot-info">
+      <div class="snapshot-info-item"><span class="snapshot-info-label">BPM:</span><span class="snapshot-info-value">${snapInfo.bpm || sec?.bpm || "-"}</span></div>
+      <div class="snapshot-info-item"><span class="snapshot-info-label">当前拍:</span><span class="snapshot-info-value">${evt?.beatLabel || "-"}</span></div>
+      <div class="snapshot-info-item"><span class="snapshot-info-label">总步数:</span><span class="snapshot-info-value">${totalSteps}</span></div>
+      <div class="snapshot-info-item"><span class="snapshot-info-label">小节:</span><span class="snapshot-info-value">${snapInfo.measureCount || sec?.measureCount || 4} × ${bpm}/4</span></div>
+    </div>
+  `;
+  reviewSnapshotMini.innerHTML = miniHtml + infoHtml;
+  reviewSnapshotDetail.style.display = "none";
+}
+
+function renderReviewConfig(entry, detail) {
+  const section = (entry.snapshot?.sections?.[0]) || state.sections.find(s => s.id === entry.sectionId);
+  if (!section) {
+    reviewVoicesEl.textContent = "—";
+    reviewLoopEl.textContent = "—";
+    reviewMixEl.textContent = "—";
+    reviewBpmChangesRow.style.display = "none";
+    return;
+  }
+  const voiceChips = instruments.map((inst, idx) => {
+    const on = entry.enabledInstruments ? entry.enabledInstruments[idx] : true;
+    return `<span class="config-chip ${on ? "enabled" : "disabled"}">${inst.token} ${inst.name}</span>`;
+  }).join("");
+  reviewVoicesEl.innerHTML = voiceChips;
+  const loopLabel = entry.loop === "" || entry.loop == null ? "全段" : `第${Number(entry.loop) + 1}小节`;
+  reviewLoopEl.textContent = `${entry.loopLabel || loopLabel}`;
+  const mix = entry.mixConfig || section.mixConfig || createDefaultMixConfig();
+  const mixSummaries = instruments.map((inst, idx) => {
+    const vol = mix.volume?.[idx] ?? 100;
+    const accent = mix.accent?.[idx] ? " ⭐" : "";
+    return `${inst.token}${vol !== 100 ? `(${vol}%)` : ""}${accent}`;
+  }).filter(Boolean);
+  reviewMixEl.textContent = mixSummaries.join("  ·  ");
+  const events = detail?.events || [];
+  const bpmChanges = events.filter(e => e.type === "bpm");
+  if (bpmChanges.length > 0) {
+    const bpmPairs = bpmChanges.map(e => `${e.data?.from}→${e.data?.to}`).join(", ");
+    reviewBpmChangesEl.textContent = `${bpmChanges.length}次: ${bpmPairs}`;
+    reviewBpmChangesRow.style.display = "flex";
+  } else {
+    reviewBpmChangesRow.style.display = "none";
+  }
+}
+
+function renderReviewRelatedNotes(entry, detail) {
+  const section = (entry.snapshot?.sections?.[0]) || state.sections.find(s => s.id === entry.sectionId);
+  const notes = section?.collabNotes || section?.notes || [];
+  if (!Array.isArray(notes) || notes.length === 0) {
+    reviewNotesList.innerHTML = `<div class="review-empty">暂无相关批注</div>`;
+    return;
+  }
+  const formatNote = (n, idx) => {
+    if (typeof n === "string") {
+      return `
+        <div class="review-note-item">
+          <div class="review-note-header">
+            <span class="review-note-type teacher">老师批注</span>
+          </div>
+          <div class="review-note-content">${n}</div>
+        </div>
+      `;
+    }
+    const targetLabel = n.target === "all" || n.target == null ? "全段" : `第${Number(n.target) + 1}小节`;
+    const priorityIcon = { high: "🔴", medium: "🟡", low: "🟢" }[n.priority || "medium"] || "";
+    return `
+      <div class="review-note-item">
+        <div class="review-note-header">
+          <span class="review-note-type ${n.type || "teacher"}">${n.type === "student" ? "👨‍🎓 学生反馈" : "👨‍🏫 老师批注"}</span>
+          <span class="review-note-meta">${priorityIcon} ${targetLabel} · ${getAssigneeLabel(n.assignee)}</span>
+        </div>
+        <div class="review-note-content">${n.content || ""}</div>
+        <div class="review-note-footer">
+          <span class="review-note-assignee">📋 练习目标: ${n.practiceGoal || 0}次</span>
+          <span class="review-note-status ${n.resolved ? "resolved" : "pending"}">${n.resolved ? "✅ 已解决" : "⏳ 待解决"}</span>
+        </div>
+      </div>
+    `;
+  };
+  reviewNotesList.innerHTML = notes.map(formatNote).join("");
+}
+
+function renderReviewWeakness(weakness) {
+  if (!weakness) {
+    reviewWeaknessContent.innerHTML = `<div class="review-empty">诊断失败</div>`;
+    return;
+  }
+  const score = weakness.stabilityScore || 0;
+  const scoreColor = score >= 90 ? "var(--active)" : score >= 70 ? "var(--gold)" : "var(--accent)";
+  const scoreDeg = (score / 100) * 360;
+  const levelIcon = {
+    excellent: "🌟",
+    good: "✅",
+    fair: "📈",
+    poor: "⚠️"
+  }[weakness.level || "good"];
+  const weakPoints = weakness.weakPoints || [];
+  const weakListHtml = weakPoints.length > 0 ? `
+    <div class="weakness-section-title">🎯 薄弱点 TOP ${weakPoints.length}</div>
+    <div class="weakness-list">
+      ${weakPoints.map(w => `
+        <div class="weakness-item severity-${w.severity}">
+          <div class="weakness-beat">${w.beatLabel || "—"}</div>
+          <div class="weakness-desc">
+            <strong>${w.reason || "原因"}：</strong>${w.description || ""}
+          </div>
+          <span class="weakness-severity">${{high: "高", medium: "中", low: "低"}[w.severity] || ""}</span>
+        </div>
+      `).join("")}
+    </div>
+  ` : `<div class="review-empty" style="margin-top:10px;">未发现明显薄弱点，继续保持！</div>`;
+  const stats = weakness.stats || {};
+  const statsHtml = `
+    <div class="snapshot-info" style="margin-top:14px;">
+      <div class="snapshot-info-item"><span class="snapshot-info-label">暂停次数:</span><span class="snapshot-info-value">${stats.pauseCount || 0}</span></div>
+      <div class="snapshot-info-item"><span class="snapshot-info-label">BPM变化:</span><span class="snapshot-info-value">${stats.bpmChangeCount || 0}</span></div>
+      <div class="snapshot-info-item"><span class="snapshot-info-label">循环次数:</span><span class="snapshot-info-value">${stats.loopCount || 0}</span></div>
+      <div class="snapshot-info-item"><span class="snapshot-info-label">声部切换:</span><span class="snapshot-info-value">${stats.voiceChangeCount || 0}</span></div>
+    </div>
+  `;
+  reviewWeaknessContent.innerHTML = `
+    <div class="weakness-overall-score">
+      <div class="weakness-score-ring" style="background: conic-gradient(${scoreColor} 0deg ${scoreDeg}deg, #e8dfce ${scoreDeg}deg 360deg);">
+        <span class="weakness-score-text">${score}</span>
+      </div>
+      <div>
+        <div class="weakness-score-label">排练稳定度评分</div>
+        <div class="weakness-score-desc">${levelIcon} ${weakness.description || ""}</div>
+      </div>
+    </div>
+    ${weakListHtml}
+    ${statsHtml}
+  `;
+}
+
+function jumpFromReviewToBeat() {
+  if (!currentReviewRehearsalEntry || !currentReviewDetail) return;
+  const events = currentReviewDetail.events || [];
+  const evt = events[reviewState.selectedEventIndex];
+  if (!evt || typeof evt.beat !== "number") {
+    alert("请先选择一个事件");
+    return;
+  }
+  const entrySectionId = currentReviewRehearsalEntry.sectionId;
+  const targetSection = state.sections.find(s => s.id === entrySectionId) || state.sections[0];
+  if (!targetSection) {
+    alert("找不到对应段落");
+    return;
+  }
+  const beat = Math.max(0, Math.min(evt.beat, getSectionSteps(targetSection) - 1));
+  if (timer) stopPlayback();
+  state.currentSectionId = targetSection.id;
+  playhead = beat;
+  pendingRehearsalResume = {
+    sectionId: targetSection.id,
+    playhead: beat
+  };
+  syncFields();
+  render();
+  renderGrid();
+  highlight(beat);
+  closeReviewOverlay();
+  setTimeout(() => {
+    alert(`已跳转至 ${targetSection.name} · ${evt.beatLabel}`);
+  }, 100);
+}
+
+function openCreateNoteFromReview() {
+  if (!currentReviewRehearsalEntry || !currentReviewDetail) return;
+  const events = currentReviewDetail.events || [];
+  const evt = events[reviewState.selectedEventIndex];
+  if (!evt) {
+    alert("请先选择一个事件");
+    return;
+  }
+  const section = state.sections.find(s => s.id === currentReviewRehearsalEntry.sectionId) || getCurrentSection();
+  if (!section) return;
+  createNoteFromReviewInfo.innerHTML = `
+    <p>基于复盘事件创建批注任务：<strong>${evt.beatLabel} - ${getEventTitle(evt)}</strong></p>
+    <p style="margin-top:4px;">段落：<strong>${section.name}</strong> · 时间：<strong>${formatTimestamp(evt.timestamp)}</strong></p>
+  `;
+  const mc = section.measureCount || 4;
+  const evtMeasure = typeof evt.measure === "number" ? evt.measure : Math.floor(evt.beat / (section.beatsPerMeasure || 4));
+  let optsHtml = '<option value="all">全段</option>';
+  for (let i = 0; i < mc; i++) {
+    optsHtml += `<option value="${i}" ${i === evtMeasure ? "selected" : ""}>第${i + 1}小节</option>`;
+  }
+  createNoteFromReviewTargetEl.innerHTML = optsHtml;
+  const autoContent = `[复盘 ${evt.beatLabel}] ${getEventTitle(evt)}`;
+  createNoteFromReviewContentEl.value = autoContent;
+  createNoteFromReviewOverlay.style.display = "flex";
+}
+
+function closeCreateNoteFromReview() {
+  createNoteFromReviewOverlay.style.display = "none";
+}
+
+function confirmCreateNoteFromReview() {
+  if (!currentReviewRehearsalEntry) return;
+  const content = createNoteFromReviewContentEl.value.trim();
+  if (!content) {
+    alert("请输入批注内容");
+    return;
+  }
+  const section = state.sections.find(s => s.id === currentReviewRehearsalEntry.sectionId) || getCurrentSection();
+  if (!section) {
+    alert("找不到对应段落");
+    return;
+  }
+  const originalSectionId = state.currentSectionId;
+  state.currentSectionId = section.id;
+  const type = createNoteFromReviewTypeEl.value;
+  const target = createNoteFromReviewTargetEl.value;
+  const assignee = createNoteFromReviewAssigneeEl.value;
+  const priority = createNoteFromReviewPriorityEl.value;
+  const practiceGoal = Number(createNoteFromReviewGoalEl.value) || 0;
+  createCollabNote(content, type, target, assignee, priority, practiceGoal);
+  state.currentSectionId = originalSectionId;
+  save();
+  render();
+  if (currentReviewDetail) {
+    renderReviewRelatedNotes(currentReviewRehearsalEntry, currentReviewDetail);
+  }
+  closeCreateNoteFromReview();
+  alert("✅ 批注任务已创建！");
+}
+
+function diagnoseWeaknessFromCurrentReview() {
+  if (!currentReviewDetail) return;
+  if (!Array.isArray(currentReviewDetail.events) || currentReviewDetail.events.length === 0) {
+    alert("当前复盘记录无事件数据，无法进行诊断（可能为摘要记录）");
+    return;
+  }
+  const weakness = diagnoseWeaknessFromEvents(currentReviewDetail.events);
+  currentReviewDetail.weakness = weakness;
+  setReviewDetailForRehearsal(currentReviewDetail.id, currentReviewDetail);
+  renderReviewWeakness(weakness);
+  updateStorageInfo();
+}
+
+function exportReviewData() {
+  if (!currentReviewRehearsalEntry || !currentReviewDetail) {
+    alert("请先选择一条排练记录");
+    return;
+  }
+  const exportData = {
+    exportAt: new Date().toISOString(),
+    version: 1,
+    rehearsalEntry: currentReviewRehearsalEntry,
+    reviewDetail: currentReviewDetail
+  };
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const safeName = (currentReviewRehearsalEntry.sectionName || "复盘").replace(/[^\w\u4e00-\u9fa5]/g, "_");
+  a.href = url;
+  a.download = `复盘_${safeName}_${Date.now()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function navigateTimelineEvent(direction) {
+  const events = currentReviewDetail?.events || [];
+  if (events.length === 0) return;
+  let next = reviewState.selectedEventIndex;
+  if (next < 0) {
+    next = direction > 0 ? 0 : events.length - 1;
+  } else {
+    next = next + direction;
+  }
+  if (next >= 0 && next < events.length) {
+    selectReviewEvent(next);
+  }
+}
+
+if (reviewReviewBtn) {
+  reviewReviewBtn.addEventListener("click", () => openReviewOverlay(null));
+}
+if (reviewCloseBtn) reviewCloseBtn.addEventListener("click", closeReviewOverlay);
+if (reviewCancelBtn) reviewCancelBtn.addEventListener("click", closeReviewOverlay);
+if (reviewJumpBtn) reviewJumpBtn.addEventListener("click", jumpFromReviewToBeat);
+if (reviewCreateNoteBtn) reviewCreateNoteBtn.addEventListener("click", openCreateNoteFromReview);
+if (reviewDiagnoseBtn) reviewDiagnoseBtn.addEventListener("click", diagnoseWeaknessFromCurrentReview);
+if (reviewExportBtn) reviewExportBtn.addEventListener("click", exportReviewData);
+if (timelinePrevBtn) timelinePrevBtn.addEventListener("click", () => navigateTimelineEvent(-1));
+if (timelineNextBtn) timelineNextBtn.addEventListener("click", () => navigateTimelineEvent(1));
+if (createNoteFromReviewCloseBtn) createNoteFromReviewCloseBtn.addEventListener("click", closeCreateNoteFromReview);
+if (createNoteFromReviewCancelBtn) createNoteFromReviewCancelBtn.addEventListener("click", closeCreateNoteFromReview);
+if (createNoteFromReviewConfirmBtn) createNoteFromReviewConfirmBtn.addEventListener("click", confirmCreateNoteFromReview);
+
+reviewOverlay.addEventListener("click", (e) => {
+  if (e.target === reviewOverlay) closeReviewOverlay();
+});
+createNoteFromReviewOverlay.addEventListener("click", (e) => {
+  if (e.target === createNoteFromReviewOverlay) closeCreateNoteFromReview();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (!reviewState.active) return;
+  if (e.key === "Escape") {
+    if (createNoteFromReviewOverlay.style.display !== "none") {
+      closeCreateNoteFromReview();
+    } else {
+      closeReviewOverlay();
+    }
+    e.preventDefault();
+  }
+  if (reviewContent.style.display !== "none" && reviewState.selectedRehearsalId) {
+    if (e.key === "ArrowLeft") {
+      navigateTimelineEvent(-1);
+      e.preventDefault();
+    } else if (e.key === "ArrowRight") {
+      navigateTimelineEvent(1);
+      e.preventDefault();
+    } else if (e.key === "Enter" && !reviewJumpBtn.disabled) {
+      jumpFromReviewToBeat();
+      e.preventDefault();
+    }
   }
 });
