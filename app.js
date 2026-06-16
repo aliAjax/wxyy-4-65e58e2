@@ -185,7 +185,10 @@ const defaultState = {
   saved: [],
   playCount: 0,
   lastPlayedAt: null,
-  recentPlayedSection: ""
+  recentPlayedSection: "",
+  schemeId: null,
+  versionId: null,
+  parentVersionId: null
 };
 
 function parseMeasureFromNote(content) {
@@ -3043,20 +3046,55 @@ rehearsalClearBtn.addEventListener("click", () => {
   renderRehearsalTimeline();
 });
 
+function ensureSchemeIds() {
+  if (!state.schemeId) {
+    state.schemeId = crypto.randomUUID();
+  }
+  if (!state.versionId) {
+    state.versionId = crypto.randomUUID();
+  }
+}
+
 function buildExportData() {
-  return {
+  ensureSchemeIds();
+
+  const currentVersionId = state.versionId;
+  const newVersionId = crypto.randomUUID();
+
+  const snapshotSections = deepCloneSections(state.sections);
+
+  const exportData = {
     schemaVersion: SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
+    schemeId: state.schemeId,
+    versionId: newVersionId,
+    parentVersionId: state.versionId,
     pieceName: state.pieceName,
     sections: deepCloneSections(state.sections),
     currentSectionId: state.currentSectionId,
     continuousPlay: state.continuousPlay,
     saved: deepCloneSavedList(state.saved),
+    rehearsalLog: JSON.parse(JSON.stringify(rehearsalLog || [])),
+    baseSnapshot: {
+      versionId: currentVersionId,
+      schemeId: state.schemeId,
+      pieceName: state.pieceName,
+      sections: snapshotSections,
+      currentSectionId: state.currentSectionId,
+      continuousPlay: state.continuousPlay,
+      snapshotAt: new Date().toISOString()
+    },
     appInfo: {
       name: "传统戏曲锣鼓经排练可视化",
-      version: "1.0.0"
+      version: "1.0.0",
+      feature: "3-way-merge"
     }
   };
+
+  state.versionId = newVersionId;
+  save();
+
+  return exportData;
 }
 
 function exportScheme() {
@@ -3482,6 +3520,10 @@ function applySchemeImport() {
         state.sections = deepCloneSections(parsedSchemeData.sections);
         state.currentSectionId = parsedSchemeData.currentSectionId || state.sections[0]?.id;
         state.continuousPlay = parsedSchemeData.continuousPlay ?? false;
+        state.schemeId = parsedSchemeData.schemeId || crypto.randomUUID();
+        state.versionId = parsedSchemeData.versionId || crypto.randomUUID();
+        state.parentVersionId = parsedSchemeData.parentVersionId || null;
+        state.baseSnapshot = parsedSchemeData.baseSnapshot || null;
 
         state.sections.forEach(section => {
           migrateNotesToCollabNotes(section);
@@ -6142,7 +6184,25 @@ function initMergeState() {
   mergeState = {
     collabData: null,
     collabRehearsalLog: [],
+    baseData: null,
+    baseRehearsalLog: [],
+    baseInfo: {
+      available: false,
+      sameScheme: false,
+      relation: "unknown",
+      oursVersion: null,
+      theirsVersion: null,
+      baseVersion: null
+    },
     diffs: {
+      sections: [],
+      grid: {},
+      bpm: {},
+      voices: {},
+      notes: {},
+      practice: []
+    },
+    threeWayDiffs: {
       sections: [],
       grid: {},
       bpm: {},
@@ -6152,6 +6212,7 @@ function initMergeState() {
     },
     conflicts: [],
     resolvedConflicts: {},
+    autoMergeable: [],
     mergedData: null,
     mergedRehearsalLog: [],
     autoMerged: false
@@ -6189,10 +6250,22 @@ function updateMergeStats() {
     return;
   }
 
-  const totalDiffs = countTotalDiffs();
-  const conflictCount = mergeState.conflicts.length;
+  const baseAvailable = mergeState.baseInfo.available && mergeState.threeWayDiffs;
+
+  let totalDiffs, autoCount, conflictCount;
+
+  if (baseAvailable) {
+    const autoMergeableCount = mergeState.autoMergeable?.length || 0;
+    conflictCount = mergeState.conflicts?.length || 0;
+    totalDiffs = autoMergeableCount + conflictCount;
+    autoCount = autoMergeableCount;
+  } else {
+    totalDiffs = countTotalDiffs();
+    conflictCount = mergeState.conflicts.length;
+    autoCount = totalDiffs - conflictCount;
+  }
+
   const resolvedCount = Object.keys(mergeState.resolvedConflicts).length;
-  const autoCount = totalDiffs - conflictCount;
 
   mergeTotalDiffsEl.textContent = totalDiffs;
   mergeAutoDiffsEl.textContent = Math.max(0, autoCount);
@@ -6236,7 +6309,11 @@ async function handleMergeFileSelect(e) {
       mergeState.collabRehearsalLog = data.rehearsalLog;
     }
 
+    extractBaseAndAnalyze(data);
+
     computeAllDiffs();
+    computeThreeWayDiffs();
+    detectConflictsThreeWay();
     updateMergeStats();
     renderMergeOverview();
     renderAllMergeTabs();
@@ -6244,6 +6321,62 @@ async function handleMergeFileSelect(e) {
     alert("协作文件解析失败：" + error.message);
     schemeMergeFileInput.value = "";
   }
+}
+
+function extractBaseAndAnalyze(collabData) {
+  ensureSchemeIds();
+
+  const oursSchemeId = state.schemeId;
+  const theirsSchemeId = collabData.schemeId;
+  const sameScheme = oursSchemeId && theirsSchemeId && oursSchemeId === theirsSchemeId;
+
+  let baseData = null;
+  let baseRehearsalLog = [];
+  let baseAvailable = false;
+  let relation = "unknown";
+  let baseVersionId = null;
+
+  if (sameScheme) {
+    if (collabData.baseSnapshot && collabData.baseSnapshot.sections) {
+      baseData = collabData.baseSnapshot;
+      baseVersionId = collabData.baseSnapshot.versionId;
+      baseAvailable = true;
+      relation = "has_base_from_theirs";
+    } else if (state.baseSnapshot && state.baseSnapshot.sections) {
+      baseData = state.baseSnapshot;
+      baseVersionId = state.baseSnapshot.versionId;
+      baseAvailable = true;
+      relation = "has_base_from_ours";
+    }
+
+    if (baseAvailable) {
+      if (state.versionId && collabData.parentVersionId &&
+          state.versionId === collabData.parentVersionId) {
+        relation = "theirs_forked_from_ours";
+      } else if (collabData.versionId && state.parentVersionId &&
+                 collabData.versionId === state.parentVersionId) {
+        relation = "ours_forked_from_theirs";
+      } else if (state.versionId && collabData.versionId &&
+                 state.versionId === collabData.versionId) {
+        relation = "same_version";
+      }
+    }
+  } else {
+    relation = "different_scheme";
+  }
+
+  mergeState.baseData = baseData;
+  mergeState.baseRehearsalLog = baseData?.rehearsalLog || [];
+  mergeState.baseInfo = {
+    available: baseAvailable,
+    sameScheme,
+    relation,
+    oursVersion: state.versionId,
+    theirsVersion: collabData.versionId,
+    baseVersion: baseVersionId,
+    oursExportedAt: state.baseSnapshot?.snapshotAt || null,
+    theirsExportedAt: collabData.exportedAt || null
+  };
 }
 
 function computeAllDiffs() {
@@ -6437,6 +6570,665 @@ function comparePracticeLogs() {
   });
 
   return diffs;
+}
+
+function computeThreeWayDiffs() {
+  if (!mergeState || !mergeState.collabData) return;
+
+  const baseAvailable = mergeState.baseInfo.available && mergeState.baseData;
+
+  if (!baseAvailable) {
+    mergeState.threeWayDiffs = null;
+    return;
+  }
+
+  const baseSections = mergeState.baseData.sections || [];
+  const ourSections = state.sections || [];
+  const theirSections = mergeState.collabData.sections || [];
+
+  mergeState.threeWayDiffs = {
+    sections: compareSectionListsThreeWay(baseSections, ourSections, theirSections),
+    grid: {},
+    bpm: {},
+    voices: {},
+    notes: {},
+    practice: comparePracticeLogsThreeWay()
+  };
+
+  const baseSectionMap = new Map(baseSections.map(s => [s.id, s]));
+  const ourSectionMap = new Map(ourSections.map(s => [s.id, s]));
+  const theirSectionMap = new Map(theirSections.map(s => [s.id, s]));
+
+  const allSectionIds = new Set([
+    ...baseSectionMap.keys(),
+    ...ourSectionMap.keys(),
+    ...theirSectionMap.keys()
+  ]);
+
+  allSectionIds.forEach(sectionId => {
+    const base = baseSectionMap.get(sectionId);
+    const ours = ourSectionMap.get(sectionId);
+    const theirs = theirSectionMap.get(sectionId);
+
+    if (base && ours && theirs) {
+      mergeState.threeWayDiffs.grid[sectionId] = compareGridThreeWay(base, ours, theirs);
+      mergeState.threeWayDiffs.bpm[sectionId] = compareBPMThreeWay(base, ours, theirs);
+      mergeState.threeWayDiffs.voices[sectionId] = compareVoicesThreeWay(base, ours, theirs);
+      mergeState.threeWayDiffs.notes[sectionId] = compareNotesThreeWay(base, ours, theirs);
+    }
+  });
+}
+
+function classifyThreeWay(baseVal, ourVal, theirVal) {
+  const baseEqOur = baseVal === ourVal;
+  const baseEqTheirs = baseVal === theirVal;
+  const ourEqTheirs = ourVal === theirVal;
+
+  if (baseEqOur && baseEqTheirs) {
+    return "same";
+  } else if (!baseEqOur && baseEqTheirs) {
+    return "ours_only";
+  } else if (baseEqOur && !baseEqTheirs) {
+    return "theirs_only";
+  } else if (!baseEqOur && !baseEqTheirs && ourEqTheirs) {
+    return "both_same";
+  } else {
+    return "conflict";
+  }
+}
+
+function compareSectionListsThreeWay(base, ours, theirs) {
+  const baseIds = new Set(base.map(s => s.id));
+  const ourIds = new Set(ours.map(s => s.id));
+  const theirIds = new Set(theirs.map(s => s.id));
+  const allIds = new Set([...baseIds, ...ourIds, ...theirIds]);
+  const result = [];
+
+  allIds.forEach(id => {
+    const baseSec = base.find(s => s.id === id);
+    const ourSec = ours.find(s => s.id === id);
+    const theirSec = theirs.find(s => s.id === id);
+    const name = (ourSec || theirSec || baseSec)?.name || "未知段落";
+
+    let type;
+    if (baseSec && ourSec && theirSec) {
+      type = "exists";
+    } else if (!baseSec && ourSec && theirSec) {
+      type = "both_added_same";
+    } else if (!baseSec && ourSec && !theirSec) {
+      type = "ours_added";
+    } else if (!baseSec && !ourSec && theirSec) {
+      type = "theirs_added";
+    } else if (baseSec && ourSec && !theirSec) {
+      type = "theirs_deleted";
+    } else if (baseSec && !ourSec && theirSec) {
+      type = "ours_deleted";
+    } else {
+      type = "both_deleted";
+    }
+
+    result.push({
+      id,
+      name,
+      type,
+      base: baseSec,
+      ours: ourSec,
+      theirs: theirSec
+    });
+  });
+
+  return result;
+}
+
+function compareGridThreeWay(base, ours, theirs) {
+  const basePattern = base.pattern || [];
+  const ourPattern = ours.pattern || [];
+  const theirPattern = theirs.pattern || [];
+
+  const rows = Math.max(
+    basePattern.length, ourPattern.length, theirPattern.length, 4
+  );
+  const cols = Math.max(
+    getSectionSteps(base),
+    getSectionSteps(ours),
+    getSectionSteps(theirs)
+  );
+
+  const diffs = [];
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const baseVal = basePattern[row]?.[col] || "";
+      const ourVal = ourPattern[row]?.[col] || "";
+      const theirVal = theirPattern[row]?.[col] || "";
+
+      const type = classifyThreeWay(baseVal, ourVal, theirVal);
+
+      if (type !== "same") {
+        diffs.push({
+          row,
+          col,
+          base: baseVal,
+          ours: ourVal,
+          theirs: theirVal,
+          type
+        });
+      }
+    }
+  }
+
+  return diffs;
+}
+
+function compareBPMThreeWay(base, ours, theirs) {
+  const fields = ["bpm", "name", "measureCount", "beatsPerMeasure", "loop"];
+  const diffs = [];
+
+  fields.forEach(field => {
+    const baseVal = base[field];
+    const ourVal = ours[field];
+    const theirVal = theirs[field];
+
+    const type = classifyThreeWay(baseVal, ourVal, theirVal);
+
+    if (type !== "same") {
+      diffs.push({
+        field,
+        base: baseVal,
+        ours: ourVal,
+        theirs: theirVal,
+        type
+      });
+    }
+  });
+
+  return diffs;
+}
+
+function compareVoicesThreeWay(base, ours, theirs) {
+  const baseVoices = base.enabledInstruments || [true, true, true, true];
+  const ourVoices = ours.enabledInstruments || [true, true, true, true];
+  const theirVoices = theirs.enabledInstruments || [true, true, true, true];
+  const diffs = [];
+
+  for (let i = 0; i < 4; i++) {
+    const type = classifyThreeWay(baseVoices[i], ourVoices[i], theirVoices[i]);
+
+    if (type !== "same") {
+      diffs.push({
+        index: i,
+        name: instruments[i]?.name || `声部${i + 1}`,
+        base: baseVoices[i],
+        ours: ourVoices[i],
+        theirs: theirVoices[i],
+        type
+      });
+    }
+  }
+
+  return diffs;
+}
+
+function compareNotesThreeWay(base, ours, theirs) {
+  const baseNotes = base.collabNotes || [];
+  const ourNotes = ours.collabNotes || [];
+  const theirNotes = theirs.collabNotes || [];
+
+  const baseMap = new Map(baseNotes.map(n => [n.id, n]));
+  const ourMap = new Map(ourNotes.map(n => [n.id, n]));
+  const theirMap = new Map(theirNotes.map(n => [n.id, n]));
+
+  const allIds = new Set([...baseMap.keys(), ...ourMap.keys(), ...theirMap.keys()]);
+  const diffs = [];
+
+  allIds.forEach(id => {
+    const baseNote = baseMap.get(id);
+    const ourNote = ourMap.get(id);
+    const theirNote = theirMap.get(id);
+
+    let type;
+    if (baseNote && ourNote && theirNote) {
+      const ourChanged = baseNote.text !== ourNote.text ||
+        baseNote.type !== ourNote.type ||
+        baseNote.done !== ourNote.done;
+      const theirChanged = baseNote.text !== theirNote.text ||
+        baseNote.type !== theirNote.type ||
+        baseNote.done !== theirNote.done;
+      const ourEqTheirs = ourNote.text === theirNote.text &&
+        ourNote.type === theirNote.type &&
+        ourNote.done === theirNote.done;
+
+      if (!ourChanged && !theirChanged) {
+        type = "same";
+      } else if (ourChanged && !theirChanged) {
+        type = "ours_only";
+      } else if (!ourChanged && theirChanged) {
+        type = "theirs_only";
+      } else if (ourChanged && theirChanged && ourEqTheirs) {
+        type = "both_same";
+      } else {
+        type = "conflict";
+      }
+    } else if (!baseNote && ourNote && theirNote) {
+      const ourEqTheirs = ourNote.text === theirNote.text &&
+        ourNote.type === theirNote.type &&
+        ourNote.done === theirNote.done;
+      type = ourEqTheirs ? "both_added_same" : "both_added_diff";
+    } else if (!baseNote && ourNote && !theirNote) {
+      type = "ours_added";
+    } else if (!baseNote && !ourNote && theirNote) {
+      type = "theirs_added";
+    } else if (baseNote && ourNote && !theirNote) {
+      type = "theirs_deleted";
+    } else if (baseNote && !ourNote && theirNote) {
+      type = "ours_deleted";
+    } else {
+      type = "both_deleted";
+    }
+
+    diffs.push({
+      id,
+      type,
+      base: baseNote,
+      ours: ourNote,
+      theirs: theirNote
+    });
+  });
+
+  return diffs;
+}
+
+function comparePracticeLogsThreeWay() {
+  const baseLog = mergeState.baseRehearsalLog || [];
+  const ourLog = rehearsalLog || [];
+  const theirLog = mergeState.collabRehearsalLog || [];
+
+  const baseMap = new Map(baseLog.map(r => [r.id, r]));
+  const ourMap = new Map(ourLog.map(r => [r.id, r]));
+  const theirMap = new Map(theirLog.map(r => [r.id, r]));
+
+  const allIds = new Set([...baseMap.keys(), ...ourMap.keys(), ...theirMap.keys()]);
+  const diffs = [];
+
+  allIds.forEach(id => {
+    const baseEntry = baseMap.get(id);
+    const ourEntry = ourMap.get(id);
+    const theirEntry = theirMap.get(id);
+
+    let type;
+    if (baseEntry && ourEntry && theirEntry) {
+      type = "same";
+    } else if (!baseEntry && ourEntry && theirEntry) {
+      type = "both_added";
+    } else if (!baseEntry && ourEntry && !theirEntry) {
+      type = "ours_added";
+    } else if (!baseEntry && !ourEntry && theirEntry) {
+      type = "theirs_added";
+    } else if (baseEntry && ourEntry && !theirEntry) {
+      type = "theirs_deleted";
+    } else if (baseEntry && !ourEntry && theirEntry) {
+      type = "ours_deleted";
+    } else {
+      type = "both_deleted";
+    }
+
+    diffs.push({
+      id,
+      type,
+      base: baseEntry,
+      ours: ourEntry,
+      theirs: theirEntry
+    });
+  });
+
+  return diffs;
+}
+
+function detectConflictsThreeWay() {
+  mergeState.conflicts = [];
+  mergeState.autoMergeable = [];
+
+  const baseAvailable = mergeState.baseInfo.available && mergeState.threeWayDiffs;
+
+  if (!baseAvailable) {
+    detectConflicts();
+    return;
+  }
+
+  const sectionDiffs = mergeState.threeWayDiffs.sections || [];
+  sectionDiffs.forEach(s => {
+    if (s.type === "ours_added") {
+      mergeState.autoMergeable.push({
+        id: `section_ours_added_${s.id}`,
+        type: "section_ours_added",
+        sectionId: s.id,
+        sectionName: s.name,
+        description: `当前版本新增段落「${s.name}」`,
+        autoResolution: "keep_ours",
+        ours: s.ours,
+        theirs: null
+      });
+    } else if (s.type === "theirs_added") {
+      mergeState.autoMergeable.push({
+        id: `section_theirs_added_${s.id}`,
+        type: "section_theirs_added",
+        sectionId: s.id,
+        sectionName: s.name,
+        description: `协作版本新增段落「${s.name}」`,
+        autoResolution: "accept_theirs",
+        ours: null,
+        theirs: s.theirs
+      });
+    } else if (s.type === "both_added_same") {
+      mergeState.autoMergeable.push({
+        id: `section_both_added_${s.id}`,
+        type: "section_both_added_same",
+        sectionId: s.id,
+        sectionName: s.name,
+        description: `双方都新增了相同段落「${s.name}」`,
+        autoResolution: "keep_either",
+        ours: s.ours,
+        theirs: s.theirs
+      });
+    } else if (s.type === "ours_deleted") {
+      mergeState.autoMergeable.push({
+        id: `section_ours_deleted_${s.id}`,
+        type: "section_ours_deleted",
+        sectionId: s.id,
+        sectionName: s.name,
+        description: `当前版本删除了段落「${s.name}」`,
+        autoResolution: "keep_ours_deleted",
+        ours: null,
+        theirs: s.theirs
+      });
+    } else if (s.type === "theirs_deleted") {
+      mergeState.autoMergeable.push({
+        id: `section_theirs_deleted_${s.id}`,
+        type: "section_theirs_deleted",
+        sectionId: s.id,
+        sectionName: s.name,
+        description: `协作版本删除了段落「${s.name}」`,
+        autoResolution: "accept_theirs_deleted",
+        ours: s.ours,
+        theirs: null
+      });
+    }
+  });
+
+  const practiceDiffs = mergeState.threeWayDiffs.practice || [];
+  practiceDiffs.forEach(p => {
+    if (p.type === "theirs_added") {
+      mergeState.autoMergeable.push({
+        id: `practice_theirs_added_${p.id}`,
+        type: "practice_theirs_added",
+        practiceId: p.id,
+        description: `协作版本新增练习记录（${p.theirs?.sectionName || "未知段落"}）`,
+        autoResolution: "accept_theirs",
+        ours: null,
+        theirs: p.theirs
+      });
+    } else if (p.type === "ours_added") {
+      mergeState.autoMergeable.push({
+        id: `practice_ours_added_${p.id}`,
+        type: "practice_ours_added",
+        practiceId: p.id,
+        description: `当前版本新增练习记录（${p.ours?.sectionName || "未知段落"}）`,
+        autoResolution: "keep_ours",
+        ours: p.ours,
+        theirs: null
+      });
+    } else if (p.type === "both_added") {
+      mergeState.autoMergeable.push({
+        id: `practice_both_added_${p.id}`,
+        type: "practice_both_added",
+        practiceId: p.id,
+        description: `双方都有练习记录（${p.ours?.sectionName || "未知段落"}）`,
+        autoResolution: "keep_both",
+        ours: p.ours,
+        theirs: p.theirs
+      });
+    }
+  });
+
+  Object.keys(mergeState.threeWayDiffs.grid || {}).forEach(sectionId => {
+    const gridDiffs = mergeState.threeWayDiffs.grid[sectionId] || [];
+    const section = state.sections.find(s => s.id === sectionId) ||
+      mergeState.collabData.sections.find(s => s.id === sectionId);
+    const sectionName = section?.name || "未知段落";
+
+    const conflictDiffs = gridDiffs.filter(d => d.type === "conflict");
+    const oursOnlyDiffs = gridDiffs.filter(d => d.type === "ours_only");
+    const theirsOnlyDiffs = gridDiffs.filter(d => d.type === "theirs_only");
+    const bothSameDiffs = gridDiffs.filter(d => d.type === "both_same");
+
+    if (conflictDiffs.length > 0) {
+      mergeState.conflicts.push({
+        id: `grid_${sectionId}`,
+        type: "grid",
+        sectionId,
+        sectionName,
+        description: `谱面格子冲突（${conflictDiffs.length}处）`,
+        gridDiffs: conflictDiffs,
+        allGridDiffs: gridDiffs,
+        autoResolve: null,
+        threeWay: true
+      });
+    }
+
+    if (theirsOnlyDiffs.length > 0 || oursOnlyDiffs.length > 0 || bothSameDiffs.length > 0) {
+      mergeState.autoMergeable.push({
+        id: `grid_auto_${sectionId}`,
+        type: "grid_auto",
+        sectionId,
+        sectionName,
+        description: `谱面格子自动合并（${theirsOnlyDiffs.length + oursOnlyDiffs.length + bothSameDiffs.length}处）`,
+        oursOnlyCount: oursOnlyDiffs.length,
+        theirsOnlyCount: theirsOnlyDiffs.length,
+        bothSameCount: bothSameDiffs.length,
+        autoResolution: "auto_merge",
+        threeWay: true
+      });
+    }
+  });
+
+  Object.keys(mergeState.threeWayDiffs.bpm || {}).forEach(sectionId => {
+    const bpmDiffs = mergeState.threeWayDiffs.bpm[sectionId] || [];
+    const section = state.sections.find(s => s.id === sectionId) ||
+      mergeState.collabData.sections.find(s => s.id === sectionId);
+    const sectionName = section?.name || "未知段落";
+
+    bpmDiffs.forEach(diff => {
+      if (diff.type === "conflict") {
+        mergeState.conflicts.push({
+          id: `bpm_${sectionId}_${diff.field}`,
+          type: "bpm",
+          sectionId,
+          sectionName,
+          field: diff.field,
+          description: `${sectionName} - ${getBPMFieldLabel(diff.field)} 冲突`,
+          base: diff.base,
+          ours: diff.ours,
+          theirs: diff.theirs,
+          autoResolve: null,
+          threeWay: true
+        });
+      } else if (diff.type === "theirs_only") {
+        mergeState.autoMergeable.push({
+          id: `bpm_theirs_${sectionId}_${diff.field}`,
+          type: "bpm_theirs",
+          sectionId,
+          sectionName,
+          field: diff.field,
+          description: `${sectionName} - ${getBPMFieldLabel(diff.field)}（协作修改）`,
+          base: diff.base,
+          ours: diff.ours,
+          theirs: diff.theirs,
+          autoResolution: "accept_theirs",
+          threeWay: true
+        });
+      } else if (diff.type === "ours_only") {
+        mergeState.autoMergeable.push({
+          id: `bpm_ours_${sectionId}_${diff.field}`,
+          type: "bpm_ours",
+          sectionId,
+          sectionName,
+          field: diff.field,
+          description: `${sectionName} - ${getBPMFieldLabel(diff.field)}（当前修改）`,
+          base: diff.base,
+          ours: diff.ours,
+          theirs: diff.theirs,
+          autoResolution: "keep_ours",
+          threeWay: true
+        });
+      } else if (diff.type === "both_same") {
+        mergeState.autoMergeable.push({
+          id: `bpm_both_${sectionId}_${diff.field}`,
+          type: "bpm_both_same",
+          sectionId,
+          sectionName,
+          field: diff.field,
+          description: `${sectionName} - ${getBPMFieldLabel(diff.field)}（双方相同修改）`,
+          base: diff.base,
+          ours: diff.ours,
+          theirs: diff.theirs,
+          autoResolution: "keep_either",
+          threeWay: true
+        });
+      }
+    });
+  });
+
+  Object.keys(mergeState.threeWayDiffs.voices || {}).forEach(sectionId => {
+    const voiceDiffs = mergeState.threeWayDiffs.voices[sectionId] || [];
+    const section = state.sections.find(s => s.id === sectionId) ||
+      mergeState.collabData.sections.find(s => s.id === sectionId);
+    const sectionName = section?.name || "未知段落";
+
+    const conflictDiffs = voiceDiffs.filter(d => d.type === "conflict");
+    const autoDiffs = voiceDiffs.filter(d => d.type !== "conflict" && d.type !== "same");
+
+    if (conflictDiffs.length > 0) {
+      mergeState.conflicts.push({
+        id: `voices_${sectionId}`,
+        type: "voices",
+        sectionId,
+        sectionName,
+        voiceDiffs: conflictDiffs,
+        allVoiceDiffs: voiceDiffs,
+        description: `${sectionName} - 声部开关冲突（${conflictDiffs.length}处）`,
+        autoResolve: null,
+        threeWay: true
+      });
+    }
+
+    if (autoDiffs.length > 0) {
+      mergeState.autoMergeable.push({
+        id: `voices_auto_${sectionId}`,
+        type: "voices_auto",
+        sectionId,
+        sectionName,
+        voiceDiffs: autoDiffs,
+        description: `${sectionName} - 声部开关自动合并（${autoDiffs.length}处）`,
+        autoResolution: "auto_merge",
+        threeWay: true
+      });
+    }
+  });
+
+  Object.keys(mergeState.threeWayDiffs.notes || {}).forEach(sectionId => {
+    const noteDiffs = mergeState.threeWayDiffs.notes[sectionId] || [];
+    const section = state.sections.find(s => s.id === sectionId) ||
+      mergeState.collabData.sections.find(s => s.id === sectionId);
+    const sectionName = section?.name || "未知段落";
+
+    noteDiffs.forEach(diff => {
+      if (diff.type === "conflict" || diff.type === "both_added_diff") {
+        mergeState.conflicts.push({
+          id: `note_${sectionId}_${diff.id}`,
+          type: diff.type === "conflict" ? "note_mod" : "note_add_conflict",
+          sectionId,
+          sectionName,
+          noteId: diff.id,
+          description: `${sectionName} - 批注冲突`,
+          base: diff.base,
+          ours: diff.ours,
+          theirs: diff.theirs,
+          autoResolve: null,
+          threeWay: true
+        });
+      } else if (diff.type === "theirs_only" || diff.type === "theirs_added") {
+        mergeState.autoMergeable.push({
+          id: `note_theirs_${sectionId}_${diff.id}`,
+          type: "note_theirs",
+          sectionId,
+          sectionName,
+          noteId: diff.id,
+          description: `${sectionName} - 批注（协作新增/修改）`,
+          base: diff.base,
+          ours: diff.ours,
+          theirs: diff.theirs,
+          autoResolution: "accept_theirs",
+          threeWay: true
+        });
+      } else if (diff.type === "ours_only" || diff.type === "ours_added") {
+        mergeState.autoMergeable.push({
+          id: `note_ours_${sectionId}_${diff.id}`,
+          type: "note_ours",
+          sectionId,
+          sectionName,
+          noteId: diff.id,
+          description: `${sectionName} - 批注（当前新增/修改）`,
+          base: diff.base,
+          ours: diff.ours,
+          theirs: diff.theirs,
+          autoResolution: "keep_ours",
+          threeWay: true
+        });
+      } else if (diff.type === "both_same" || diff.type === "both_added_same") {
+        mergeState.autoMergeable.push({
+          id: `note_both_${sectionId}_${diff.id}`,
+          type: "note_both_same",
+          sectionId,
+          sectionName,
+          noteId: diff.id,
+          description: `${sectionName} - 批注（双方相同）`,
+          base: diff.base,
+          ours: diff.ours,
+          theirs: diff.theirs,
+          autoResolution: "keep_either",
+          threeWay: true
+        });
+      } else if (diff.type === "ours_deleted") {
+        mergeState.autoMergeable.push({
+          id: `note_ours_del_${sectionId}_${diff.id}`,
+          type: "note_ours_deleted",
+          sectionId,
+          sectionName,
+          noteId: diff.id,
+          description: `${sectionName} - 批注删除（当前版本）`,
+          base: diff.base,
+          ours: null,
+          theirs: diff.theirs,
+          autoResolution: "keep_ours_deleted",
+          threeWay: true
+        });
+      } else if (diff.type === "theirs_deleted") {
+        mergeState.autoMergeable.push({
+          id: `note_theirs_del_${sectionId}_${diff.id}`,
+          type: "note_theirs_deleted",
+          sectionId,
+          sectionName,
+          noteId: diff.id,
+          description: `${sectionName} - 批注删除（协作版本）`,
+          base: diff.base,
+          ours: diff.ours,
+          theirs: null,
+          autoResolution: "accept_theirs_deleted",
+          threeWay: true
+        });
+      }
+    });
+  });
 }
 
 function detectConflicts() {
@@ -6748,23 +7540,288 @@ function autoMerge() {
 function applyAutoMerge() {
   if (!mergeState || !mergeState.collabData) return;
 
-  mergeState.conflicts.forEach(conflict => {
-    if (conflict.autoResolve && !mergeState.resolvedConflicts[conflict.id]) {
-      if (conflict.autoResolve === "accept") {
-        mergeState.resolvedConflicts[conflict.id] = "theirs";
-      } else if (conflict.autoResolve === "reject") {
-        mergeState.resolvedConflicts[conflict.id] = "ours";
+  const baseAvailable = mergeState.baseInfo.available && mergeState.threeWayDiffs;
+
+  if (baseAvailable) {
+    applyAutoMergeThreeWay();
+  } else {
+    mergeState.conflicts.forEach(conflict => {
+      if (conflict.autoResolve && !mergeState.resolvedConflicts[conflict.id]) {
+        if (conflict.autoResolve === "accept") {
+          mergeState.resolvedConflicts[conflict.id] = "theirs";
+        } else if (conflict.autoResolve === "reject") {
+          mergeState.resolvedConflicts[conflict.id] = "ours";
+        }
+      }
+    });
+
+    autoMerge();
+    renderMergeConflicts();
+  }
+}
+
+function applyAutoMergeThreeWay() {
+  if (!mergeState || !mergeState.autoMergeable) return;
+
+  mergeState.autoMergeable.forEach(item => {
+    if (!mergeState.resolvedConflicts[item.id]) {
+      let resolution;
+      switch (item.autoResolution) {
+        case "keep_ours":
+        case "keep_ours_deleted":
+          resolution = "ours";
+          break;
+        case "accept_theirs":
+        case "accept_theirs_deleted":
+          resolution = "theirs";
+          break;
+        case "keep_either":
+        case "keep_both":
+        case "auto_merge":
+          resolution = "auto";
+          break;
+        default:
+          resolution = "theirs";
+      }
+      mergeState.resolvedConflicts[item.id] = resolution;
+    }
+  });
+
+  autoMergeThreeWay();
+  renderMergeConflicts();
+}
+
+function autoMergeThreeWay() {
+  if (!mergeState || !mergeState.collabData || !mergeState.threeWayDiffs) return;
+
+  const ourSections = deepCloneSections(state.sections);
+  const theirSections = deepCloneSections(mergeState.collabData.sections);
+  const ourSectionMap = new Map(ourSections.map(s => [s.id, s]));
+  const theirSectionMap = new Map(theirSections.map(s => [s.id, s]));
+
+  const sectionDiffs = mergeState.threeWayDiffs.sections || [];
+  const mergedSections = [];
+
+  sectionDiffs.forEach(s => {
+    const sectionId = s.id;
+    const ours = ourSectionMap.get(sectionId);
+    const theirs = theirSectionMap.get(sectionId);
+
+    if (s.type === "exists") {
+      const merged = deepCloneSection(ours);
+
+      const gridDiffs = mergeState.threeWayDiffs.grid[sectionId] || [];
+      const gridConflictId = `grid_${sectionId}`;
+      const gridResolution = mergeState.resolvedConflicts[gridConflictId];
+
+      gridDiffs.forEach(diff => {
+        if (!merged.pattern) merged.pattern = [];
+        if (!merged.pattern[diff.row]) merged.pattern[diff.row] = [];
+
+        if (diff.type === "ours_only") {
+          merged.pattern[diff.row][diff.col] = diff.ours;
+        } else if (diff.type === "theirs_only") {
+          merged.pattern[diff.row][diff.col] = diff.theirs;
+        } else if (diff.type === "both_same") {
+          merged.pattern[diff.row][diff.col] = diff.ours;
+        } else if (diff.type === "conflict") {
+          if (gridResolution === "theirs") {
+            merged.pattern[diff.row][diff.col] = diff.theirs;
+          } else {
+            merged.pattern[diff.row][diff.col] = diff.ours;
+          }
+        }
+      });
+
+      const bpmDiffs = mergeState.threeWayDiffs.bpm[sectionId] || [];
+      bpmDiffs.forEach(diff => {
+        const conflictId = `bpm_${sectionId}_${diff.field}`;
+        const resolution = mergeState.resolvedConflicts[conflictId];
+
+        if (diff.type === "ours_only") {
+          merged[diff.field] = diff.ours;
+        } else if (diff.type === "theirs_only") {
+          merged[diff.field] = diff.theirs;
+        } else if (diff.type === "both_same") {
+          merged[diff.field] = diff.ours;
+        } else if (diff.type === "conflict") {
+          if (resolution === "theirs") {
+            merged[diff.field] = diff.theirs;
+          } else {
+            merged[diff.field] = diff.ours;
+          }
+        }
+      });
+
+      const voiceConflictId = `voices_${sectionId}`;
+      const voiceResolution = mergeState.resolvedConflicts[voiceConflictId];
+      const voiceDiffs = mergeState.threeWayDiffs.voices[sectionId] || [];
+
+      if (voiceDiffs.length > 0) {
+        const mergedVoices = [...ours.enabledInstruments];
+        voiceDiffs.forEach(diff => {
+          if (diff.type === "ours_only") {
+            mergedVoices[diff.index] = diff.ours;
+          } else if (diff.type === "theirs_only") {
+            mergedVoices[diff.index] = diff.theirs;
+          } else if (diff.type === "both_same") {
+            mergedVoices[diff.index] = diff.ours;
+          } else if (diff.type === "conflict") {
+            if (voiceResolution === "theirs") {
+              mergedVoices[diff.index] = diff.theirs;
+            } else {
+              mergedVoices[diff.index] = diff.ours;
+            }
+          }
+        });
+        merged.enabledInstruments = mergedVoices;
+      }
+
+      const noteDiffs = mergeState.threeWayDiffs.notes[sectionId] || [];
+      const mergedNotes = [];
+
+      noteDiffs.forEach(diff => {
+        const noteId = diff.id;
+
+        if (diff.type === "same" || diff.type === "both_same" || diff.type === "both_added_same") {
+          if (diff.ours) {
+            mergedNotes.push({ ...diff.ours });
+          }
+        } else if (diff.type === "ours_only" || diff.type === "ours_added") {
+          if (diff.ours) {
+            mergedNotes.push({ ...diff.ours });
+          }
+        } else if (diff.type === "theirs_only" || diff.type === "theirs_added") {
+          if (diff.theirs) {
+            mergedNotes.push({ ...diff.theirs });
+          }
+        } else if (diff.type === "conflict" || diff.type === "both_added_diff") {
+          const conflictId = `note_${sectionId}_${noteId}`;
+          const resolution = mergeState.resolvedConflicts[conflictId];
+          if (resolution === "theirs" && diff.theirs) {
+            mergedNotes.push({ ...diff.theirs });
+          } else if (diff.ours) {
+            mergedNotes.push({ ...diff.ours });
+          }
+        } else if (diff.type === "ours_deleted") {
+          const conflictId = `note_ours_del_${sectionId}_${noteId}`;
+          const resolution = mergeState.resolvedConflicts[conflictId];
+          if (resolution === "ours" || resolution === "keep_ours_deleted") {
+          } else if (diff.theirs) {
+            mergedNotes.push({ ...diff.theirs });
+          }
+        } else if (diff.type === "theirs_deleted") {
+          const conflictId = `note_theirs_del_${sectionId}_${noteId}`;
+          const resolution = mergeState.resolvedConflicts[conflictId];
+          if (resolution === "theirs" || resolution === "accept_theirs_deleted") {
+          } else if (diff.ours) {
+            mergedNotes.push({ ...diff.ours });
+          }
+        }
+      });
+
+      merged.collabNotes = mergedNotes;
+
+      mergedSections.push(merged);
+    } else if (s.type === "theirs_added") {
+      const conflictId = `section_theirs_added_${sectionId}`;
+      const resolution = mergeState.resolvedConflicts[conflictId];
+      if (resolution !== "ours" && theirs) {
+        mergedSections.push(deepCloneSection(theirs));
+      }
+    } else if (s.type === "ours_added") {
+      const conflictId = `section_ours_added_${sectionId}`;
+      const resolution = mergeState.resolvedConflicts[conflictId];
+      if (resolution !== "theirs" && ours) {
+        mergedSections.push(deepCloneSection(ours));
+      }
+    } else if (s.type === "both_added_same") {
+      if (ours) {
+        mergedSections.push(deepCloneSection(ours));
+      }
+    } else if (s.type === "ours_deleted") {
+      const conflictId = `section_ours_deleted_${sectionId}`;
+      const resolution = mergeState.resolvedConflicts[conflictId];
+      if (resolution === "theirs" && theirs) {
+        mergedSections.push(deepCloneSection(theirs));
+      }
+    } else if (s.type === "theirs_deleted") {
+      const conflictId = `section_theirs_deleted_${sectionId}`;
+      const resolution = mergeState.resolvedConflicts[conflictId];
+      if (resolution === "ours" && ours) {
+        mergedSections.push(deepCloneSection(ours));
       }
     }
   });
 
-  autoMerge();
-  renderMergeConflicts();
+  const practiceDiffs = mergeState.threeWayDiffs.practice || [];
+  const mergedRehearsalLog = [];
+  const addedIds = new Set();
+
+  practiceDiffs.forEach(p => {
+    if (p.type === "same" || p.type === "both_added") {
+      if (p.ours && !addedIds.has(p.id)) {
+        mergedRehearsalLog.push({ ...p.ours });
+        addedIds.add(p.id);
+      }
+      if (p.theirs && !addedIds.has(p.id)) {
+        mergedRehearsalLog.push({ ...p.theirs });
+        addedIds.add(p.id);
+      }
+    } else if (p.type === "ours_added") {
+      if (p.ours && !addedIds.has(p.id)) {
+        mergedRehearsalLog.push({ ...p.ours });
+        addedIds.add(p.id);
+      }
+    } else if (p.type === "theirs_added") {
+      const conflictId = `practice_theirs_added_${p.id}`;
+      const resolution = mergeState.resolvedConflicts[conflictId];
+      if (resolution !== "ours" && p.theirs && !addedIds.has(p.id)) {
+        mergedRehearsalLog.push({ ...p.theirs });
+        addedIds.add(p.id);
+      }
+    }
+  });
+
+  mergedRehearsalLog.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+  const ourPieceName = state.pieceName;
+  const theirPieceName = mergeState.collabData.pieceName;
+  const basePieceName = mergeState.baseData?.pieceName || ourPieceName;
+
+  let mergedPieceName = ourPieceName;
+  if (ourPieceName === basePieceName && theirPieceName !== basePieceName) {
+    mergedPieceName = theirPieceName;
+  }
+
+  mergeState.mergedData = {
+    ...state,
+    pieceName: mergedPieceName,
+    sections: mergedSections,
+    continuousPlay: state.continuousPlay,
+    currentSectionId: state.currentSectionId || mergedSections[0]?.id,
+    saved: state.saved,
+    schemeId: state.schemeId,
+    versionId: crypto.randomUUID(),
+    parentVersionId: state.versionId,
+    baseSnapshot: null
+  };
+  mergeState.mergedRehearsalLog = mergedRehearsalLog;
+  mergeState.autoMerged = true;
+
+  updateMergeStats();
 }
 
 function resolveConflict(conflictId, resolution) {
   mergeState.resolvedConflicts[conflictId] = resolution;
-  autoMerge();
+
+  const baseAvailable = mergeState.baseInfo.available && mergeState.threeWayDiffs;
+  if (baseAvailable) {
+    autoMergeThreeWay();
+  } else {
+    autoMerge();
+  }
+
   renderMergeConflicts();
   updateMergeStats();
 }
@@ -6893,35 +7950,147 @@ function renderMergeOverview() {
     return;
   }
 
-  const sections = mergeState.diffs.sections || [];
+  const baseAvailable = mergeState.baseInfo.available && mergeState.threeWayDiffs;
+  const info = mergeState.baseInfo;
 
-  mergeSectionListEl.innerHTML = sections.map((s, idx) => {
+  let versionInfoHtml = "";
+
+  if (baseAvailable) {
+    const relationLabels = {
+      "theirs_forked_from_ours": "协作版本基于当前版本修改",
+      "ours_forked_from_theirs": "当前版本基于协作版本修改",
+      "has_base_from_theirs": "检测到共同基线（来自协作文件）",
+      "has_base_from_ours": "检测到共同基线（来自当前版本）",
+      "same_version": "同一版本"
+    };
+
+    const relationLabel = relationLabels[info.relation] || "检测到共同基线";
+    const theirsDate = info.theirsExportedAt ? new Date(info.theirsExportedAt).toLocaleString("zh-CN") : "未知";
+
+    versionInfoHtml = `
+      <div style="margin-bottom: 16px; padding: 14px 16px; background: linear-gradient(135deg, #f0fdf4, #dcfce7); border: 1px solid #86efac; border-radius: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <span style="font-size: 20px;">🔗</span>
+          <strong style="color: #166534; font-size: 14px;">基线合并模式</strong>
+          <span class="merge-badge" style="background: #bbf7d0; color: #166534; border-color: #86efac;">3-way</span>
+        </div>
+        <p style="margin: 0 0 6px; font-size: 12px; color: #15803d;">
+          ${relationLabel}，可智能区分各自修改，大幅减少冲突
+        </p>
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; font-size: 11px; color: #166534;">
+          <div>
+            <span style="font-weight: 600;">协作版本导出时间：</span>
+            <span>${theirsDate}</span>
+          </div>
+          <div>
+            <span style="font-weight: 600;">自动合并项：</span>
+            <span>${mergeState.autoMergeable?.length || 0} 项</span>
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (info.sameScheme) {
+    versionInfoHtml = `
+      <div style="margin-bottom: 16px; padding: 14px 16px; background: linear-gradient(135deg, #fef3c7, #fde68a); border: 1px solid #fcd34d; border-radius: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <span style="font-size: 20px;">⚠️</span>
+          <strong style="color: #92400e; font-size: 14px;">同一方案，无基线信息</strong>
+        </div>
+        <p style="margin: 0; font-size: 12px; color: #b45309;">
+          两个版本来自同一方案，但缺少基线快照，将使用普通两方对比模式。建议从同一导出文件分支修改以获得更好的合并效果。
+        </p>
+      </div>
+    `;
+  } else {
+    versionInfoHtml = `
+      <div style="margin-bottom: 16px; padding: 14px 16px; background: linear-gradient(135deg, #fef2f2, #fecaca); border: 1px solid #fca5a5; border-radius: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <span style="font-size: 20px;">⚠️</span>
+          <strong style="color: #991b1b; font-size: 14px;">不同方案</strong>
+        </div>
+        <p style="margin: 0; font-size: 12px; color: #b91c1c;">
+          当前方案与协作方案ID不同，可能不是同一个方案的不同版本。请确认是否继续合并。
+        </p>
+      </div>
+    `;
+  }
+
+  const sections = (baseAvailable && mergeState.threeWayDiffs?.sections)
+    ? mergeState.threeWayDiffs.sections
+    : mergeState.diffs.sections || [];
+
+  const sectionItemsHtml = sections.map((s, idx) => {
     const section = state.sections.find(sec => sec.id === s.id) ||
       mergeState.collabData.sections.find(sec => sec.id === s.id);
     const bpm = section?.bpm || "-";
 
-    const gridDiffs = mergeState.diffs.grid[s.id] || [];
-    const bpmDiffs = mergeState.diffs.bpm[s.id] || [];
-    const voiceDiffs = mergeState.diffs.voices[s.id] || [];
-    const noteDiffs = mergeState.diffs.notes[s.id] || [];
+    let gridDiffs, bpmDiffs, voiceDiffs, noteDiffs;
+    if (baseAvailable) {
+      gridDiffs = mergeState.threeWayDiffs.grid[s.id] || [];
+      bpmDiffs = mergeState.threeWayDiffs.bpm[s.id] || [];
+      voiceDiffs = mergeState.threeWayDiffs.voices[s.id] || [];
+      noteDiffs = mergeState.threeWayDiffs.notes[s.id] || [];
+    } else {
+      gridDiffs = mergeState.diffs.grid[s.id] || [];
+      bpmDiffs = mergeState.diffs.bpm[s.id] || [];
+      voiceDiffs = mergeState.diffs.voices[s.id] || [];
+      noteDiffs = mergeState.diffs.notes[s.id] || [];
+    }
 
     const hasGridDiff = gridDiffs.length > 0;
     const hasBpmDiff = bpmDiffs.length > 0;
     const hasVoiceDiff = voiceDiffs.length > 0;
-    const hasNoteDiff = noteDiffs.some(n => n.type !== "same");
+    const hasNoteDiff = noteDiffs.some(n => n.type !== "same" && n.type !== "exists");
 
-    const typeLabels = {
-      add: `<span class="merge-badge merge-badge-add">新增</span>`,
-      del: `<span class="merge-badge merge-badge-del">删除</span>`,
-      same: `<span class="merge-badge merge-badge-mod">相同</span>`
-    };
+    let typeLabel = "";
+    if (baseAvailable) {
+      const threeWayLabels = {
+        "exists": `<span class="merge-badge merge-badge-mod">存在</span>`,
+        "ours_added": `<span class="merge-badge merge-badge-add">我方新增</span>`,
+        "theirs_added": `<span class="merge-badge merge-badge-add">协作新增</span>`,
+        "both_added_same": `<span class="merge-badge merge-badge-conflict">双方新增</span>`,
+        "ours_deleted": `<span class="merge-badge merge-badge-del">我方删除</span>`,
+        "theirs_deleted": `<span class="merge-badge merge-badge-del">协作删除</span>`,
+        "both_deleted": `<span class="merge-badge merge-badge-del">双方删除</span>`
+      };
+      typeLabel = threeWayLabels[s.type] || "";
+    } else {
+      const typeLabels = {
+        add: `<span class="merge-badge merge-badge-add">新增</span>`,
+        del: `<span class="merge-badge merge-badge-del">删除</span>`,
+        same: `<span class="merge-badge merge-badge-mod">相同</span>`
+      };
+      typeLabel = typeLabels[s.type] || "";
+    }
 
     let tags = "";
-    if (s.type === "same") {
-      if (hasGridDiff) tags += `<span class="merge-section-diff-tag diff-tag-grid">谱面 ${gridDiffs.length}</span>`;
-      if (hasBpmDiff) tags += `<span class="merge-section-diff-tag diff-tag-bpm">BPM ${bpmDiffs.length}</span>`;
-      if (hasVoiceDiff) tags += `<span class="merge-section-diff-tag diff-tag-voice">声部 ${voiceDiffs.length}</span>`;
-      if (hasNoteDiff) tags += `<span class="merge-section-diff-tag diff-tag-note">批注 ${noteDiffs.filter(n => n.type !== "same").length}</span>`;
+    if (s.type === "same" || s.type === "exists") {
+      if (hasGridDiff) {
+        const conflictCount = gridDiffs.filter(d => d.type === "conflict").length;
+        const autoCount = gridDiffs.length - conflictCount;
+        const label = baseAvailable && conflictCount > 0
+          ? `谱面 ${autoCount}自动 / ${conflictCount}冲突`
+          : `谱面 ${gridDiffs.length}`;
+        tags += `<span class="merge-section-diff-tag diff-tag-grid">${label}</span>`;
+      }
+      if (hasBpmDiff) {
+        const conflictCount = bpmDiffs.filter(d => d.type === "conflict").length;
+        const label = baseAvailable && conflictCount > 0
+          ? `BPM ${bpmDiffs.length - conflictCount}自动 / ${conflictCount}冲突`
+          : `BPM ${bpmDiffs.length}`;
+        tags += `<span class="merge-section-diff-tag diff-tag-bpm">${label}</span>`;
+      }
+      if (hasVoiceDiff) {
+        const conflictCount = voiceDiffs.filter(d => d.type === "conflict").length;
+        const label = baseAvailable && conflictCount > 0
+          ? `声部 ${voiceDiffs.length - conflictCount}自动 / ${conflictCount}冲突`
+          : `声部 ${voiceDiffs.length}`;
+        tags += `<span class="merge-section-diff-tag diff-tag-voice">${label}</span>`;
+      }
+      if (hasNoteDiff) {
+        const diffCount = noteDiffs.filter(n => n.type !== "same" && n.type !== "exists").length;
+        tags += `<span class="merge-section-diff-tag diff-tag-note">批注 ${diffCount}</span>`;
+      }
       if (!hasGridDiff && !hasBpmDiff && !hasVoiceDiff && !hasNoteDiff) {
         tags = `<span class="merge-section-diff-tag diff-tag-same">无差异</span>`;
       }
@@ -6931,7 +8100,7 @@ function renderMergeOverview() {
       <div class="merge-section-item">
         <div class="merge-section-index">${idx + 1}</div>
         <div class="merge-section-info">
-          <div class="merge-section-name">${typeLabels[s.type] || ""} ${s.name}</div>
+          <div class="merge-section-name">${typeLabel} ${s.name}</div>
           <div class="merge-section-meta">
             <span>BPM: ${bpm}</span>
             <div class="merge-section-diff-tags">${tags}</div>
@@ -6940,6 +8109,8 @@ function renderMergeOverview() {
       </div>
     `;
   }).join("");
+
+  mergeSectionListEl.innerHTML = versionInfoHtml + sectionItemsHtml;
 }
 
 function renderMergeGridSelects() {
