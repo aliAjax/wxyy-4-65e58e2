@@ -13,6 +13,22 @@ const instruments = [
 ];
 const steps = 16;
 
+const PHRASE_TYPES = {
+  QISHI: { id: "qishi", name: "起势", icon: "🚀", color: "#b3252e", desc: "开场引入，奠定节奏基础" },
+  LIANGXIANG: { id: "liangxiang", name: "亮相", icon: "✨", color: "#c59427", desc: "核心展示，节奏鲜明" },
+  ZHUANCHANG: { id: "zhuanchang", name: "转场", icon: "🔄", color: "#1b6a68", desc: "过渡衔接，节奏变化" },
+  SHOUSHU: { id: "shoushu", name: "收束", icon: "🎯", color: "#6d28d9", desc: "结尾收煞，节奏渐缓" },
+  FANFU: { id: "fanfu", name: "反复", icon: "♻️", color: "#0891b2", desc: "重复主题，强化记忆" },
+  BIANZOU: { id: "bianzou", name: "变奏", icon: "🎼", color: "#db2777", desc: "主题变化，增加层次" },
+  CUSTOM: { id: "custom", name: "自定义", icon: "📝", color: "#6b665e", desc: "用户自定义乐句块" }
+};
+
+const PHRASE_TYPE_LIST = Object.values(PHRASE_TYPES);
+
+let structuralMode = false;
+let selectedPhraseId = null;
+let phraseDragSourceId = null;
+
 function getSectionSteps(section) {
   if (!section) return 16;
   const mc = section.measureCount || 4;
@@ -24,6 +40,141 @@ function beatLabelForSection(section, index) {
   const measure = Math.floor(index / bpm) + 1;
   const beat = (index % bpm) + 1;
   return `${measure}-${beat}`;
+}
+
+function getPhraseType(typeId) {
+  return PHRASE_TYPE_LIST.find(t => t.id === typeId) || PHRASE_TYPES.CUSTOM;
+}
+
+function createDefaultPhrase(typeId, startMeasure, endMeasure, section) {
+  const type = getPhraseType(typeId);
+  const mc = section?.measureCount || 4;
+  const bpm = section?.beatsPerMeasure || 4;
+  const safeStart = Math.max(0, Math.min(mc - 1, startMeasure));
+  const safeEnd = Math.max(safeStart, Math.min(mc - 1, endMeasure));
+  return {
+    id: crypto.randomUUID(),
+    name: type.name,
+    type: typeId,
+    startMeasure: safeStart,
+    endMeasure: safeEnd,
+    repeat: 1,
+    tempoMultiplier: 1.0,
+    note: "",
+    color: type.color,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function autoGeneratePhrases(section) {
+  if (!section) return [];
+  const mc = section.measureCount || 4;
+  const bpm = section.beatsPerMeasure || 4;
+  const phrases = [];
+  const phrasesPerBlock = 4;
+  
+  if (mc <= 2) {
+    phrases.push(createDefaultPhrase("liangxiang", 0, mc - 1, section));
+    return phrases;
+  }
+  
+  if (mc <= 4) {
+    phrases.push(createDefaultPhrase("qishi", 0, Math.floor(mc / 2), section));
+    phrases.push(createDefaultPhrase("shoushu", Math.floor(mc / 2) + 1, mc - 1, section));
+    return phrases;
+  }
+  
+  const blocks = Math.ceil(mc / phrasesPerBlock);
+  for (let i = 0; i < blocks; i++) {
+    const start = i * phrasesPerBlock;
+    const end = Math.min(start + phrasesPerBlock - 1, mc - 1);
+    let typeId;
+    if (i === 0) typeId = "qishi";
+    else if (i === blocks - 1) typeId = "shoushu";
+    else if (i % 2 === 1) typeId = "zhuanchang";
+    else typeId = "liangxiang";
+    phrases.push(createDefaultPhrase(typeId, start, end, section));
+  }
+  return phrases;
+}
+
+function ensureSectionPhrases(section) {
+  if (!section) return;
+  if (!Array.isArray(section.phrases) || section.phrases.length === 0) {
+    section.phrases = autoGeneratePhrases(section);
+    return;
+  }
+  const mc = section.measureCount || 4;
+  section.phrases = section.phrases.map(p => ({
+    ...p,
+    startMeasure: Math.max(0, Math.min(mc - 1, p.startMeasure || 0)),
+    endMeasure: Math.max(p.startMeasure || 0, Math.min(mc - 1, p.endMeasure || 0)),
+    repeat: typeof p.repeat === "number" ? Math.max(1, Math.min(16, p.repeat)) : 1,
+    tempoMultiplier: typeof p.tempoMultiplier === "number" ? Math.max(0.25, Math.min(4, p.tempoMultiplier)) : 1.0,
+    name: p.name || getPhraseType(p.type).name,
+    color: p.color || getPhraseType(p.type).color
+  }));
+}
+
+function getPhraseAtMeasure(section, measureIndex) {
+  if (!section || !Array.isArray(section.phrases)) return null;
+  return section.phrases.find(p => 
+    measureIndex >= p.startMeasure && measureIndex <= p.endMeasure
+  );
+}
+
+function getPhraseAtBeat(section, beatIndex) {
+  if (!section) return null;
+  const bpm = section.beatsPerMeasure || 4;
+  const measure = Math.floor(beatIndex / bpm);
+  return getPhraseAtMeasure(section, measure);
+}
+
+function getPhraseBeatRange(section, phrase) {
+  if (!section || !phrase) return { start: 0, end: 0, length: 0 };
+  const bpm = section.beatsPerMeasure || 4;
+  const start = phrase.startMeasure * bpm;
+  const end = (phrase.endMeasure + 1) * bpm - 1;
+  return { start, end, length: end - start + 1 };
+}
+
+function normalizePhraseOverlaps(phrases, mc) {
+  if (!Array.isArray(phrases)) return [];
+  const sorted = [...phrases].sort((a, b) => a.startMeasure - b.startMeasure);
+  for (let i = 0; i < sorted.length; i++) {
+    const curr = sorted[i];
+    const next = sorted[i + 1];
+    if (next && curr.endMeasure >= next.startMeasure) {
+      const mid = Math.floor((curr.startMeasure + next.endMeasure) / 2);
+      curr.endMeasure = Math.min(curr.endMeasure, mid);
+      next.startMeasure = Math.max(next.startMeasure, mid + 1);
+    }
+    curr.startMeasure = Math.max(0, Math.min(mc - 1, curr.startMeasure));
+    curr.endMeasure = Math.max(curr.startMeasure, Math.min(mc - 1, curr.endMeasure));
+  }
+  return sorted.sort((a, b) => a.startMeasure - b.startMeasure);
+}
+
+function detectPhraseOverlaps(phrases) {
+  if (!Array.isArray(phrases) || phrases.length < 2) return [];
+  const overlaps = [];
+  const sorted = [...phrases].sort((a, b) => a.startMeasure - b.startMeasure);
+  for (let i = 0; i < sorted.length; i++) {
+    for (let j = i + 1; j < sorted.length; j++) {
+      const a = sorted[i];
+      const b = sorted[j];
+      if (a.endMeasure >= b.startMeasure && b.endMeasure >= a.startMeasure) {
+        overlaps.push({ phraseA: a, phraseB: b });
+      }
+    }
+  }
+  return overlaps;
+}
+
+function migrateSectionPhrases(section) {
+  if (!section) return;
+  ensureSectionPhrases(section);
 }
 
 const collabFilters = {
@@ -98,7 +249,10 @@ function deepCloneSection(section) {
       ? [...section.enabledInstruments]
       : [true, true, true, true],
     mixConfig: deepCloneMixConfig(section.mixConfig),
-    measureRange: section.measureRange ? { ...section.measureRange } : null
+    measureRange: section.measureRange ? { ...section.measureRange } : null,
+    phrases: Array.isArray(section.phrases)
+      ? section.phrases.map(p => ({ ...p }))
+      : null
   };
 }
 
@@ -159,7 +313,7 @@ function createDefaultSection(name = "段落 1") {
   const mc = 4;
   const bpm = 4;
   const totalSteps = mc * bpm;
-  return {
+  const section = {
     id: crypto.randomUUID(),
     name,
     bpm: 96,
@@ -175,15 +329,18 @@ function createDefaultSection(name = "段落 1") {
     ),
     enabledInstruments: [true, true, true, true],
     mixConfig: createDefaultMixConfig(),
-    measureRange: null
+    measureRange: null,
+    phrases: []
   };
+  section.phrases = autoGeneratePhrases(section);
+  return section;
 }
 
 function createEmptySection(name = "段落 1") {
   const mc = 4;
   const bpm = 4;
   const totalSteps = mc * bpm;
-  return {
+  const section = {
     id: crypto.randomUUID(),
     name,
     bpm: 96,
@@ -195,8 +352,11 @@ function createEmptySection(name = "段落 1") {
     pattern: instruments.map(() => Array.from({ length: totalSteps }, () => "")),
     enabledInstruments: [true, true, true, true],
     mixConfig: createDefaultMixConfig(),
-    measureRange: null
+    measureRange: null,
+    phrases: []
   };
+  section.phrases = autoGeneratePhrases(section);
+  return section;
 }
 
 const defaultState = {
@@ -381,7 +541,24 @@ function migrateOldFormat(oldState) {
     };
   }
   migrateAllSectionsToCollabNotes(result);
+  migrateAllSectionsPhrases(result);
   return result;
+}
+
+function migrateAllSectionsPhrases(state) {
+  if (!state || !Array.isArray(state.sections)) return;
+  state.sections.forEach(section => {
+    migrateSectionPhrases(section);
+  });
+  if (Array.isArray(state.saved)) {
+    state.saved.forEach(savedItem => {
+      if (Array.isArray(savedItem.sections)) {
+        savedItem.sections.forEach(section => {
+          migrateSectionPhrases(section);
+        });
+      }
+    });
+  }
 }
 
 function migrateRehearsalEntry(entry) {
@@ -500,6 +677,7 @@ if (storedState) {
   state.currentSectionId = state.sections[0].id;
 }
 migrateAllSectionsToCollabNotes(state);
+migrateAllSectionsPhrases(state);
 save();
 
 let timer = null;
@@ -510,6 +688,10 @@ let continuousPlaySectionCount = 0;
 let currentRehearsalId = null;
 let currentRehearsalStartTime = null;
 let pendingRehearsalResume = null;
+
+let currentPhraseId = null;
+let currentPhraseRepeatCount = 0;
+let basePlaybackBpm = 0;
 
 const diagnosisStorageKey = "wxyy-4-diagnosis-result";
 const weaknessProfileStorageKey = "wxyy-4-weakness-profile";
@@ -1070,6 +1252,34 @@ const sortBtns = document.querySelectorAll("[data-sort]");
 
 const tempoTrainerSection = document.querySelector("#tempoTrainer");
 const tempoTrainerToggle = document.querySelector("#tempoTrainerToggle");
+
+const structuralModeBtn = document.querySelector("#structuralModeBtn");
+const phrasePanel = document.querySelector("#phrasePanel");
+const phraseList = document.querySelector("#phraseList");
+const addPhraseBtn = document.querySelector("#addPhraseBtn");
+const phraseLibraryBtn = document.querySelector("#phraseLibraryBtn");
+const phraseEditPanel = document.querySelector("#phraseEditPanel");
+const phraseEditCloseBtn = document.querySelector("#phraseEditCloseBtn");
+const phraseNameInput = document.querySelector("#phraseNameInput");
+const phraseTypeSelect = document.querySelector("#phraseTypeSelect");
+const phraseStartMeasure = document.querySelector("#phraseStartMeasure");
+const phraseEndMeasure = document.querySelector("#phraseEndMeasure");
+const phraseRepeat = document.querySelector("#phraseRepeat");
+const phraseTempo = document.querySelector("#phraseTempo");
+const phraseNote = document.querySelector("#phraseNote");
+const phraseSaveBtn = document.querySelector("#phraseSaveBtn");
+const phraseDuplicateBtn = document.querySelector("#phraseDuplicateBtn");
+const phraseDeleteBtn = document.querySelector("#phraseDeleteBtn");
+
+const phraseLibraryOverlay = document.querySelector("#phraseLibraryOverlay");
+const phraseLibraryCloseBtn = document.querySelector("#phraseLibraryCloseBtn");
+const phraseLibraryCancelBtn = document.querySelector("#phraseLibraryCancelBtn");
+const presetPhraseList = document.querySelector("#presetPhraseList");
+const customPhraseList = document.querySelector("#customPhraseList");
+const currentPhraseList = document.querySelector("#currentPhraseList");
+const phraseLibrarySectionSelect = document.querySelector("#phraseLibrarySectionSelect");
+const phraseLibraryTabs = document.querySelectorAll(".phrase-library-tab");
+const phraseLibraryTabContents = document.querySelectorAll("[data-phrase-library-tab]");
 const tempoStartBpm = document.querySelector("#tempoStartBpm");
 const tempoEndBpm = document.querySelector("#tempoEndBpm");
 const tempoStepBpm = document.querySelector("#tempoStepBpm");
@@ -1256,6 +1466,9 @@ function renderGrid() {
 
   grid.style.gridTemplateColumns = `76px repeat(${totalSteps}, minmax(48px, 1fr))`;
 
+  ensureSectionPhrases(section);
+  const phrases = section.phrases || [];
+
   const hiddenStepMap = {};
   const answeredStepMap = {};
   if (diagnosisMode) {
@@ -1276,6 +1489,8 @@ function renderGrid() {
     const isRestHidden = question && question.rows.length === 0;
     const measure = Math.floor(i / bpm);
     const noteTypes = measureNoteTypes[measure];
+    const phrase = getPhraseAtBeat(section, i);
+    const isPhraseStart = phrase && (i === phrase.startMeasure * bpm);
     let noteClass = "";
     if (noteTypes && noteTypes.types && noteTypes.types.size > 0) {
       if (noteTypes.types.has("teacher") && noteTypes.types.has("student")) {
@@ -1290,8 +1505,13 @@ function renderGrid() {
       }
     }
 
-    let beatClass = "beat-cell" + noteClass;
+    let beatClass = "beat-cell" + noteClass + (phrase && structuralMode ? " phrase-header" : "");
     let beatContent = beatLabelForSection(section, i);
+
+    if (phrase && structuralMode && isPhraseStart) {
+      const type = getPhraseType(phrase.type);
+      beatContent = `<span class="phrase-label" style="background: ${phrase.color || type.color};">${type.icon} ${phrase.name || type.name}</span>` + beatContent;
+    }
 
     if (isRestHidden) {
       beatClass += " hidden-cell hidden-rest";
@@ -1317,6 +1537,7 @@ function renderGrid() {
       const answered = answeredStepMap[step];
       const measure = Math.floor(step / bpm);
       const noteTypes = measureNoteTypes[measure];
+      const phrase = getPhraseAtBeat(section, step);
       let noteClass = "";
       if (noteTypes && noteTypes.types && noteTypes.types.size > 0 && !diagnosisMode) {
         if (noteTypes.types.has("teacher") && noteTypes.types.has("student")) {
@@ -1331,8 +1552,13 @@ function renderGrid() {
         }
       }
 
-      let cellClass = `cell ${value ? "filled" : ""} ${muted ? "muted" : ""}${noteClass}`;
+      let cellClass = `cell ${value ? "filled" : ""} ${muted ? "muted" : ""}${noteClass}${phrase && structuralMode ? " phrase-highlight" : ""}`;
       let cellContent = value;
+      let cellStyle = "";
+
+      if (phrase && structuralMode) {
+        cellStyle = `background-color: ${phrase.color}20;`;
+      }
 
       if (isInstrumentHidden) {
         cellClass += " hidden-cell";
@@ -1345,7 +1571,7 @@ function renderGrid() {
         }
       }
 
-      row.push(`<button class="${cellClass}" type="button" data-row="${rowIndex}" data-step="${step}">${cellContent}</button>`);
+      row.push(`<button class="${cellClass}" type="button" data-row="${rowIndex}" data-step="${step}" ${cellStyle ? `style="${cellStyle}"` : ""}>${cellContent}</button>`);
     }
     return row;
   });
@@ -1668,14 +1894,7 @@ function renderSidebars() {
   const mc = section.measureCount || 4;
   const bpm = section.beatsPerMeasure || 4;
 
-  const filledByMeasure = Array.from({length: mc}, (_, i) => i).map((measure) => {
-    const start = measure * bpm;
-    const count = section.pattern.flatMap((row) => row.slice(start, start + bpm)).filter(Boolean).length;
-    return { measure: measure + 1, count };
-  });
-  structure.innerHTML = filledByMeasure.map((item) => `
-    <div class="structure-row"><span>第${item.measure}小节</span><strong>${item.count}个口令</strong></div>
-  `).join("");
+  renderPhraseList();
 
   if (notesList) {
     notesList.innerHTML = section.notes.length ? section.notes.map((note) => `
@@ -1743,6 +1962,455 @@ function getMeasureData() {
   });
 }
 
+const phraseLibraryKey = "wxyy-4-phrase-library";
+
+const PRESET_PHRASES = [
+  {
+    id: "preset-qishi-slow",
+    name: "慢起势",
+    type: "qishi",
+    icon: "🚀",
+    color: "#b3252e",
+    measureCount: 2,
+    description: "慢速开场，2小节，奠定沉稳基调",
+    patternHint: "每小节第一拍强奏"
+  },
+  {
+    id: "preset-liangxiang-kuai",
+    name: "快亮相",
+    type: "liangxiang",
+    icon: "✨",
+    color: "#c59427",
+    measureCount: 4,
+    description: "快速展示段，4小节，节奏鲜明有力",
+    patternHint: "密集鼓点配合大锣"
+  },
+  {
+    id: "preset-zhuanchang-4",
+    name: "过渡转场",
+    type: "zhuanchang",
+    icon: "🔄",
+    color: "#1b6a68",
+    measureCount: 2,
+    description: "2小节过渡，连接前后段落",
+    patternHint: "渐强渐快处理"
+  },
+  {
+    id: "preset-shoushu-huan",
+    name: "缓收束",
+    type: "shoushu",
+    icon: "🎯",
+    color: "#6d28d9",
+    measureCount: 2,
+    description: "舒缓结尾，2小节，余韵悠长",
+    patternHint: "最后一拍收锣"
+  },
+  {
+    id: "preset-fanfu-base",
+    name: "基础反复",
+    type: "fanfu",
+    icon: "♻️",
+    color: "#0891b2",
+    measureCount: 2,
+    description: "2小节反复段，强化记忆点",
+    patternHint: "重复相同节奏型"
+  },
+  {
+    id: "preset-bianzou-var",
+    name: "变奏发展",
+    type: "bianzou",
+    icon: "🎼",
+    color: "#db2777",
+    measureCount: 4,
+    description: "4小节变奏，增加节奏层次",
+    patternHint: "主题旋律加花变奏"
+  }
+];
+
+function loadPhraseLibrary() {
+  try {
+    const raw = localStorage.getItem(phraseLibraryKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePhraseLibrary(library) {
+  localStorage.setItem(phraseLibraryKey, JSON.stringify(library));
+}
+
+let customPhraseLibrary = loadPhraseLibrary();
+
+function renderPhraseList() {
+  const section = getCurrentSection();
+  if (!section || !phraseList) return;
+  ensureSectionPhrases(section);
+  const phrases = section.phrases || [];
+  const mc = section.measureCount || 4;
+  phraseList.innerHTML = phrases.map(phrase => {
+    const type = getPhraseType(phrase.type);
+    const isSelected = selectedPhraseId === phrase.id;
+    const measureRange = phrase.endMeasure - phrase.startMeasure + 1;
+    return `
+      <div class="phrase-item ${isSelected ? "selected" : ""}" 
+           data-phrase-id="${phrase.id}"
+           draggable="true"
+           style="border-left: 4px solid ${phrase.color || type.color};">
+        <div class="phrase-item-header">
+          <span class="phrase-icon" style="background: ${phrase.color || type.color}20;">${type.icon}</span>
+          <span class="phrase-name">${phrase.name || type.name}</span>
+          <span class="phrase-type-tag">${type.name}</span>
+        </div>
+        <div class="phrase-item-meta">
+          <span>📏 第${phrase.startMeasure + 1}-${phrase.endMeasure + 1}小节 (${measureRange}节)</span>
+          ${phrase.repeat > 1 ? `<span class="phrase-repeat-badge">🔁 ×${phrase.repeat}</span>` : ""}
+          ${phrase.tempoMultiplier !== 1 ? `<span class="phrase-tempo-badge">⚡ ${phrase.tempoMultiplier}x</span>` : ""}
+        </div>
+        ${phrase.note ? `<div class="phrase-note-preview">${phrase.note}</div>` : ""}
+        <div class="phrase-item-actions">
+          <button type="button" class="phrase-item-btn" data-phrase-edit="${phrase.id}" title="编辑">✎</button>
+          <button type="button" class="phrase-item-btn" data-phrase-duplicate="${phrase.id}" title="复制">⎘</button>
+          <button type="button" class="phrase-item-btn" data-phrase-save-lib="${phrase.id}" title="存为模板">💾</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+  if (phrases.length === 0) {
+    phraseList.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted);font-size:13px;">暂无乐句块，点击「+ 乐句块」添加</div>';
+  }
+}
+
+function renderPhraseTypeSelect() {
+  if (!phraseTypeSelect) return;
+  phraseTypeSelect.innerHTML = PHRASE_TYPE_LIST.map(type => 
+    `<option value="${type.id}">${type.icon} ${type.name} - ${type.desc}</option>`
+  ).join("");
+}
+
+function openPhraseEditor(phraseId) {
+  const section = getCurrentSection();
+  if (!section) return;
+  ensureSectionPhrases(section);
+  renderPhraseTypeSelect();
+  const phrase = phraseId ? section.phrases.find(p => p.id === phraseId) : null;
+  const mc = section.measureCount || 4;
+  selectedPhraseId = phraseId;
+  if (phrase) {
+    phraseNameInput.value = phrase.name || "";
+    phraseTypeSelect.value = phrase.type || "custom";
+    phraseStartMeasure.value = phrase.startMeasure + 1;
+    phraseEndMeasure.value = phrase.endMeasure + 1;
+    phraseRepeat.value = phrase.repeat || 1;
+    phraseTempo.value = phrase.tempoMultiplier || 1;
+    phraseNote.value = phrase.note || "";
+  } else {
+    phraseNameInput.value = "";
+    phraseTypeSelect.value = "liangxiang";
+    phraseStartMeasure.value = 1;
+    phraseEndMeasure.value = Math.min(2, mc);
+    phraseRepeat.value = 1;
+    phraseTempo.value = 1;
+    phraseNote.value = "";
+  }
+  phraseStartMeasure.max = mc;
+  phraseEndMeasure.max = mc;
+  phraseEditPanel.style.display = "block";
+}
+
+function closePhraseEditor() {
+  phraseEditPanel.style.display = "none";
+  selectedPhraseId = null;
+}
+
+function savePhraseFromEditor() {
+  const section = getCurrentSection();
+  if (!section) return;
+  ensureSectionPhrases(section);
+  const mc = section.measureCount || 4;
+  const typeId = phraseTypeSelect.value;
+  const type = getPhraseType(typeId);
+  let startMeasure = parseInt(phraseStartMeasure.value) - 1;
+  let endMeasure = parseInt(phraseEndMeasure.value) - 1;
+  startMeasure = Math.max(0, Math.min(mc - 1, startMeasure));
+  endMeasure = Math.max(startMeasure, Math.min(mc - 1, endMeasure));
+  const repeat = Math.max(1, Math.min(16, parseInt(phraseRepeat.value) || 1));
+  const tempoMultiplier = Math.max(0.25, Math.min(4, parseFloat(phraseTempo.value) || 1));
+  const name = phraseNameInput.value.trim() || type.name;
+  const note = phraseNote.value.trim();
+  if (selectedPhraseId) {
+    const phrase = section.phrases.find(p => p.id === selectedPhraseId);
+    if (phrase) {
+      phrase.name = name;
+      phrase.type = typeId;
+      phrase.startMeasure = startMeasure;
+      phrase.endMeasure = endMeasure;
+      phrase.repeat = repeat;
+      phrase.tempoMultiplier = tempoMultiplier;
+      phrase.note = note;
+      phrase.color = type.color;
+      phrase.updatedAt = new Date().toISOString();
+    }
+  } else {
+    const newPhrase = {
+      id: crypto.randomUUID(),
+      name,
+      type: typeId,
+      startMeasure,
+      endMeasure,
+      repeat,
+      tempoMultiplier,
+      note,
+      color: type.color,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    section.phrases.push(newPhrase);
+  }
+  section.phrases = normalizePhraseOverlaps(section.phrases, mc);
+  save();
+  renderPhraseList();
+  renderGrid();
+  closePhraseEditor();
+}
+
+function duplicatePhrase(phraseId) {
+  const section = getCurrentSection();
+  if (!section) return;
+  ensureSectionPhrases(section);
+  const phrase = section.phrases.find(p => p.id === phraseId);
+  if (!phrase) return;
+  const mc = section.measureCount || 4;
+  const newPhrase = {
+    ...phrase,
+    id: crypto.randomUUID(),
+    name: phrase.name + " (副本)",
+    startMeasure: Math.min(phrase.endMeasure + 1, mc - 1),
+    endMeasure: Math.min(phrase.endMeasure + (phrase.endMeasure - phrase.startMeasure + 1), mc - 1),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  if (newPhrase.startMeasure >= mc) {
+    newPhrase.startMeasure = 0;
+    newPhrase.endMeasure = Math.min(phrase.endMeasure - phrase.startMeasure, mc - 1);
+  }
+  section.phrases.push(newPhrase);
+  section.phrases = normalizePhraseOverlaps(section.phrases, mc);
+  save();
+  renderPhraseList();
+  renderGrid();
+}
+
+function deletePhrase(phraseId) {
+  const section = getCurrentSection();
+  if (!section) return;
+  if (!confirm("确定要删除这个乐句块吗？")) return;
+  section.phrases = section.phrases.filter(p => p.id !== phraseId);
+  if (selectedPhraseId === phraseId) {
+    closePhraseEditor();
+  }
+  save();
+  renderPhraseList();
+  renderGrid();
+}
+
+function savePhraseToLibrary(phraseId) {
+  const section = getCurrentSection();
+  if (!section) return;
+  const phrase = section.phrases.find(p => p.id === phraseId);
+  if (!phrase) return;
+  const bpm = section.beatsPerMeasure || 4;
+  const start = phrase.startMeasure * bpm;
+  const end = (phrase.endMeasure + 1) * bpm;
+  const patternSlice = section.pattern.map(row => row.slice(start, end));
+  const libItem = {
+    id: crypto.randomUUID(),
+    name: phrase.name,
+    type: phrase.type,
+    color: phrase.color,
+    measureCount: phrase.endMeasure - phrase.startMeasure + 1,
+    beatsPerMeasure: bpm,
+    pattern: patternSlice,
+    note: phrase.note || "",
+    repeat: phrase.repeat || 1,
+    tempoMultiplier: phrase.tempoMultiplier || 1,
+    createdAt: new Date().toISOString()
+  };
+  customPhraseLibrary.push(libItem);
+  savePhraseLibrary(customPhraseLibrary);
+  alert(`乐句块「${phrase.name}」已保存到乐句库！`);
+}
+
+function insertPhraseFromLibrary(libItem, targetMeasure = 0) {
+  const section = getCurrentSection();
+  if (!section) return;
+  const mc = section.measureCount || 4;
+  const bpm = section.beatsPerMeasure || 4;
+  const itemMc = libItem.measureCount || 2;
+  const startMeasure = Math.max(0, Math.min(mc - itemMc, targetMeasure));
+  const endMeasure = startMeasure + itemMc - 1;
+  const type = getPhraseType(libItem.type);
+  const newPhrase = {
+    id: crypto.randomUUID(),
+    name: libItem.name || type.name,
+    type: libItem.type || "custom",
+    startMeasure,
+    endMeasure,
+    repeat: libItem.repeat || 1,
+    tempoMultiplier: libItem.tempoMultiplier || 1,
+    note: libItem.note || "",
+    color: libItem.color || type.color,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  if (libItem.pattern && Array.isArray(libItem.pattern) && libItem.pattern.length === instruments.length) {
+    const startBeat = startMeasure * bpm;
+    const itemBpm = libItem.beatsPerMeasure || bpm;
+    libItem.pattern.forEach((row, rowIdx) => {
+      if (!section.pattern[rowIdx]) return;
+      for (let i = 0; i < row.length && i < itemMc * itemBpm; i++) {
+        const targetIdx = startBeat + i;
+        if (targetIdx < section.pattern[rowIdx].length) {
+          section.pattern[rowIdx][targetIdx] = row[i] || "";
+        }
+      }
+    });
+  }
+  ensureSectionPhrases(section);
+  section.phrases.push(newPhrase);
+  section.phrases = normalizePhraseOverlaps(section.phrases, mc);
+  save();
+  renderPhraseList();
+  renderGrid();
+  renderSidebars();
+}
+
+function renderPhraseLibrary() {
+  if (!presetPhraseList || !customPhraseList) return;
+  presetPhraseList.innerHTML = PRESET_PHRASES.map(item => {
+    const type = getPhraseType(item.type);
+    return `
+      <div class="library-phrase-card">
+        <div class="library-phrase-icon" style="background: ${item.color || type.color}20;">${item.icon || type.icon}</div>
+        <div class="library-phrase-info">
+          <div class="library-phrase-name">${item.name}</div>
+          <div class="library-phrase-meta">
+            <span>${item.measureCount}小节</span>
+            <span>${type.name}</span>
+          </div>
+          <div class="library-phrase-desc">${item.description || ""}</div>
+        </div>
+        <div class="library-phrase-actions">
+          <button type="button" class="library-phrase-btn" data-insert-preset="${item.id}">插入</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+  customPhraseList.innerHTML = customPhraseLibrary.map(item => {
+    const type = getPhraseType(item.type);
+    return `
+      <div class="library-phrase-card">
+        <div class="library-phrase-icon" style="background: ${item.color || type.color}20;">${type.icon}</div>
+        <div class="library-phrase-info">
+          <div class="library-phrase-name">${item.name}</div>
+          <div class="library-phrase-meta">
+            <span>${item.measureCount}小节</span>
+            <span>${type.name}</span>
+            ${item.tempoMultiplier !== 1 ? `<span>⚡${item.tempoMultiplier}x</span>` : ""}
+          </div>
+          ${item.note ? `<div class="library-phrase-desc">${item.note}</div>` : ""}
+        </div>
+        <div class="library-phrase-actions">
+          <button type="button" class="library-phrase-btn" data-insert-custom="${item.id}">插入</button>
+          <button type="button" class="library-phrase-btn danger" data-delete-custom="${item.id}">删除</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+  if (customPhraseLibrary.length > 0 && customPhraseEmpty) {
+    customPhraseEmpty.style.display = "none";
+  } else if (customPhraseEmpty) {
+    customPhraseEmpty.style.display = "block";
+  }
+}
+
+function renderCurrentSectionPhrases() {
+  if (!currentPhraseList || !phraseLibrarySectionSelect) return;
+  const sectionId = phraseLibrarySectionSelect.value;
+  const section = state.sections.find(s => s.id === sectionId);
+  if (!section) {
+    currentPhraseList.innerHTML = "";
+    return;
+  }
+  ensureSectionPhrases(section);
+  currentPhraseList.innerHTML = section.phrases.map(phrase => {
+    const type = getPhraseType(phrase.type);
+    const measureRange = phrase.endMeasure - phrase.startMeasure + 1;
+    return `
+      <div class="library-phrase-card">
+        <div class="library-phrase-icon" style="background: ${phrase.color || type.color}20;">${type.icon}</div>
+        <div class="library-phrase-info">
+          <div class="library-phrase-name">${phrase.name || type.name}</div>
+          <div class="library-phrase-meta">
+            <span>第${phrase.startMeasure + 1}-${phrase.endMeasure + 1}小节</span>
+            <span>${measureRange}小节</span>
+            <span>${type.name}</span>
+          </div>
+          ${phrase.note ? `<div class="library-phrase-desc">${phrase.note}</div>` : ""}
+        </div>
+        <div class="library-phrase-actions">
+          <button type="button" class="library-phrase-btn" data-copy-phrase="${phrase.id}" data-section="${sectionId}">复制到当前</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderPhraseLibrarySectionSelect() {
+  if (!phraseLibrarySectionSelect) return;
+  phraseLibrarySectionSelect.innerHTML = state.sections.map(s => 
+    `<option value="${s.id}">${s.name}</option>`
+  ).join("");
+  const currentSection = getCurrentSection();
+  if (currentSection) {
+    phraseLibrarySectionSelect.value = currentSection.id;
+  }
+}
+
+function toggleStructuralMode() {
+  structuralMode = !structuralMode;
+  if (structuralModeBtn) {
+    structuralModeBtn.classList.toggle("active", structuralMode);
+  }
+  document.body.classList.toggle("structural-mode", structuralMode);
+  renderGrid();
+  renderPhraseList();
+}
+
+function openPhraseLibrary() {
+  if (!phraseLibraryOverlay) return;
+  renderPhraseLibrary();
+  renderPhraseLibrarySectionSelect();
+  renderCurrentSectionPhrases();
+  phraseLibraryOverlay.style.display = "flex";
+}
+
+function closePhraseLibrary() {
+  if (!phraseLibraryOverlay) return;
+  phraseLibraryOverlay.style.display = "none";
+}
+
+function switchPhraseLibraryTab(tabName) {
+  phraseLibraryTabs.forEach(tab => {
+    tab.classList.toggle("active", tab.dataset.phraseTab === tabName);
+  });
+  phraseLibraryTabContents.forEach(content => {
+    content.classList.toggle("active", content.dataset.phraseLibraryTab === tabName);
+  });
+}
+
 function getFocusMeasures() {
   const measures = getMeasureData();
   const difficultyKeywords = /难|易错|注意|重点|慢|加速|易错点|节奏|配合/;
@@ -1788,8 +2456,40 @@ function getSuggestions() {
   const totalCells = measures.reduce((s, m) => s + m.total, 0);
   const totalRatio = totalCells ? totalFilled / totalCells : 0;
 
+  const phrases = section.phrases || [];
+  const phraseTypeCounts = {};
+  phrases.forEach(p => {
+    phraseTypeCounts[p.type] = (phraseTypeCounts[p.type] || 0) + 1;
+  });
+
   if (state.sections.length > 1) {
     suggestions.push({ icon: "📋", html: `当前共 <strong>${state.sections.length}</strong> 个段落，可开启<strong>连续播放</strong>按顺序排练。` });
+  }
+
+  if (structuralMode && phrases.length > 0) {
+    const typeLabels = Object.entries(phraseTypeCounts)
+      .map(([type, count]) => `${getPhraseType(type).label}×${count}`)
+      .join("、");
+    suggestions.push({ icon: "🧱", html: `结构化模式：当前段落有 <strong>${phrases.length}</strong> 个乐句块（${typeLabels}），可按乐句块组织排练。` });
+  } else if (structuralMode && phrases.length === 0) {
+    suggestions.push({ icon: "🧱", html: `已开启结构化模式，但尚未定义乐句块，点击右侧面板添加乐句块以获得编排建议。` });
+  }
+
+  if (phrases.length > 0) {
+    const overlapping = detectPhraseOverlaps(phrases);
+    if (overlapping.length > 0) {
+      suggestions.push({ icon: "⚠️", html: `检测到 <strong>${overlapping.length}</strong> 处乐句块重叠，建议调整以避免编排混乱。` });
+    }
+  }
+
+  if (phrases.length > 0 && phrases.some(p => p.repeat > 1)) {
+    const repeatPhrases = phrases.filter(p => p.repeat > 1);
+    suggestions.push({ icon: "🔄", html: `有 <strong>${repeatPhrases.length}</strong> 个乐句块设置了反复，播放时会自动重复对应小节。` });
+  }
+
+  if (phrases.length > 0 && phrases.some(p => Math.abs(p.tempoMultiplier - 1) > 0.01)) {
+    const tempoPhrases = phrases.filter(p => Math.abs(p.tempoMultiplier - 1) > 0.01);
+    suggestions.push({ icon: "⚡", html: `有 <strong>${tempoPhrases.length}</strong> 个乐句块设置了变速，播放时会自动调整速度。` });
   }
 
   if (totalRatio < 0.3) {
@@ -2807,6 +3507,35 @@ function tick() {
     }
   }
 
+  const bpm = section.beatsPerMeasure || 4;
+  const currentMeasure = Math.floor(playhead / bpm);
+  const phrases = section.phrases || [];
+  let phraseAtPlayhead = null;
+  for (const phrase of phrases) {
+    if (currentMeasure >= phrase.startMeasure && currentMeasure <= phrase.endMeasure) {
+      phraseAtPlayhead = phrase;
+      break;
+    }
+  }
+
+  if (phraseAtPlayhead && phraseAtPlayhead.id !== currentPhraseId) {
+    currentPhraseId = phraseAtPlayhead.id;
+    currentPhraseRepeatCount = 0;
+    const multiplier = phraseAtPlayhead.tempoMultiplier || 1;
+    if (Math.abs(multiplier - 1) > 0.01 && timer) {
+      clearInterval(timer);
+      const newBpm = basePlaybackBpm * multiplier;
+      timer = setInterval(tick, 60000 / newBpm);
+    }
+  } else if (!phraseAtPlayhead && currentPhraseId !== null) {
+    currentPhraseId = null;
+    currentPhraseRepeatCount = 0;
+    if (timer) {
+      clearInterval(timer);
+      timer = setInterval(tick, 60000 / basePlaybackBpm);
+    }
+  }
+
   highlight(playhead);
   section.mixConfig = section.mixConfig || createDefaultMixConfig();
   instruments.forEach((instrument, rowIndex) => {
@@ -2821,6 +3550,20 @@ function tick() {
 
   if (currentRehearsalId) {
     checkAndRecordChanges(section, playhead);
+  }
+
+  if (phraseAtPlayhead && phraseAtPlayhead.repeat > 1) {
+    const phraseEndBeat = (phraseAtPlayhead.endMeasure + 1) * bpm - 1;
+    const phraseStartBeat = phraseAtPlayhead.startMeasure * bpm;
+    if (playhead >= phraseEndBeat) {
+      currentPhraseRepeatCount++;
+      if (currentPhraseRepeatCount < phraseAtPlayhead.repeat) {
+        playhead = phraseStartBeat;
+        return;
+      } else {
+        currentPhraseRepeatCount = 0;
+      }
+    }
   }
 
   if (playhead >= end) {
@@ -2850,9 +3593,12 @@ function tick() {
           checkAndRecordChanges(nextSection, playhead);
         }
         if (nextSection.bpm !== section.bpm) {
+          basePlaybackBpm = nextSection.bpm;
           clearInterval(timer);
           timer = setInterval(tick, 60000 / nextSection.bpm);
         }
+        currentPhraseId = null;
+        currentPhraseRepeatCount = 0;
         return;
       } else {
         stopPlayback();
@@ -2934,6 +3680,10 @@ function startPlayback() {
   }, section, startingBeat);
   checkAndRecordChanges(section, startingBeat);
 
+  basePlaybackBpm = section.bpm;
+  currentPhraseId = null;
+  currentPhraseRepeatCount = 0;
+
   tick();
   timer = setInterval(tick, 60000 / section.bpm);
   rehearsalLog.unshift({
@@ -2978,6 +3728,9 @@ function stopPlayback() {
 
   clearInterval(timer);
   timer = null;
+  currentPhraseId = null;
+  currentPhraseRepeatCount = 0;
+  basePlaybackBpm = 0;
   document.querySelectorAll(".cell.playing").forEach((cell) => cell.classList.remove("playing"));
 
   let finalPauseBeat = null;
@@ -3520,6 +4273,218 @@ addSectionBtn.addEventListener("click", () => {
   save();
   render();
 });
+
+if (structuralModeBtn) {
+  structuralModeBtn.addEventListener("click", toggleStructuralMode);
+}
+
+if (addPhraseBtn) {
+  addPhraseBtn.addEventListener("click", () => {
+    openPhraseEditor(null);
+  });
+}
+
+if (phraseLibraryBtn) {
+  phraseLibraryBtn.addEventListener("click", openPhraseLibrary);
+}
+
+if (phraseEditCloseBtn) {
+  phraseEditCloseBtn.addEventListener("click", closePhraseEditor);
+}
+
+if (phraseSaveBtn) {
+  phraseSaveBtn.addEventListener("click", savePhraseFromEditor);
+}
+
+if (phraseDuplicateBtn) {
+  phraseDuplicateBtn.addEventListener("click", () => {
+    if (selectedPhraseId) {
+      duplicatePhrase(selectedPhraseId);
+    }
+  });
+}
+
+if (phraseDeleteBtn) {
+  phraseDeleteBtn.addEventListener("click", () => {
+    if (selectedPhraseId) {
+      deletePhrase(selectedPhraseId);
+    }
+  });
+}
+
+if (phraseList) {
+  phraseList.addEventListener("click", (event) => {
+    const editBtn = event.target.closest("[data-phrase-edit]");
+    const duplicateBtn = event.target.closest("[data-phrase-duplicate]");
+    const saveLibBtn = event.target.closest("[data-phrase-save-lib]");
+    const phraseItem = event.target.closest("[data-phrase-id]");
+
+    if (editBtn) {
+      event.stopPropagation();
+      const phraseId = editBtn.dataset.phraseEdit;
+      openPhraseEditor(phraseId);
+    } else if (duplicateBtn) {
+      event.stopPropagation();
+      const phraseId = duplicateBtn.dataset.phraseDuplicate;
+      duplicatePhrase(phraseId);
+    } else if (saveLibBtn) {
+      event.stopPropagation();
+      const phraseId = saveLibBtn.dataset.phraseSaveLib;
+      savePhraseToLibrary(phraseId);
+    } else if (phraseItem) {
+      const phraseId = phraseItem.dataset.phraseId;
+      selectedPhraseId = selectedPhraseId === phraseId ? null : phraseId;
+      if (selectedPhraseId) {
+        openPhraseEditor(phraseId);
+      } else {
+        closePhraseEditor();
+      }
+      renderPhraseList();
+      renderGrid();
+    }
+  });
+}
+
+if (phraseLibraryCloseBtn) {
+  phraseLibraryCloseBtn.addEventListener("click", closePhraseLibrary);
+}
+
+if (phraseLibraryCancelBtn) {
+  phraseLibraryCancelBtn.addEventListener("click", closePhraseLibrary);
+}
+
+if (phraseLibraryOverlay) {
+  phraseLibraryOverlay.addEventListener("click", (e) => {
+    if (e.target === phraseLibraryOverlay) {
+      closePhraseLibrary();
+    }
+  });
+}
+
+if (phraseLibraryTabs) {
+  phraseLibraryTabs.forEach(tab => {
+    tab.addEventListener("click", () => {
+      const tabName = tab.dataset.phraseTab;
+      switchPhraseLibraryTab(tabName);
+    });
+  });
+}
+
+if (phraseLibrarySectionSelect) {
+  phraseLibrarySectionSelect.addEventListener("change", renderCurrentSectionPhrases);
+}
+
+if (presetPhraseList) {
+  presetPhraseList.addEventListener("click", (event) => {
+    const insertBtn = event.target.closest("[data-insert-preset]");
+    if (insertBtn) {
+      const presetId = insertBtn.dataset.insertPreset;
+      const preset = PRESET_PHRASES.find(p => p.id === presetId);
+      if (preset) {
+        const section = getCurrentSection();
+        const mc = section?.measureCount || 4;
+        let targetMeasure = 0;
+        if (section?.phrases?.length > 0) {
+          const lastPhrase = section.phrases[section.phrases.length - 1];
+          targetMeasure = lastPhrase.endMeasure + 1;
+        }
+        if (targetMeasure + preset.measureCount > mc) {
+          targetMeasure = Math.max(0, mc - preset.measureCount);
+        }
+        const libItem = {
+          name: preset.name,
+          type: preset.type,
+          color: preset.color,
+          measureCount: preset.measureCount,
+          note: preset.description,
+          pattern: null
+        };
+        insertPhraseFromLibrary(libItem, targetMeasure);
+        closePhraseLibrary();
+      }
+    }
+  });
+}
+
+if (customPhraseList) {
+  customPhraseList.addEventListener("click", (event) => {
+    const insertBtn = event.target.closest("[data-insert-custom]");
+    const deleteBtn = event.target.closest("[data-delete-custom]");
+
+    if (insertBtn) {
+      const itemId = insertBtn.dataset.insertCustom;
+      const item = customPhraseLibrary.find(p => p.id === itemId);
+      if (item) {
+        const section = getCurrentSection();
+        const mc = section?.measureCount || 4;
+        let targetMeasure = 0;
+        if (section?.phrases?.length > 0) {
+          const lastPhrase = section.phrases[section.phrases.length - 1];
+          targetMeasure = lastPhrase.endMeasure + 1;
+        }
+        if (targetMeasure + item.measureCount > mc) {
+          targetMeasure = Math.max(0, mc - item.measureCount);
+        }
+        insertPhraseFromLibrary(item, targetMeasure);
+        closePhraseLibrary();
+      }
+    } else if (deleteBtn) {
+      const itemId = deleteBtn.dataset.deleteCustom;
+      if (confirm("确定要删除这个乐句模板吗？")) {
+        customPhraseLibrary = customPhraseLibrary.filter(p => p.id !== itemId);
+        savePhraseLibrary(customPhraseLibrary);
+        renderPhraseLibrary();
+      }
+    }
+  });
+}
+
+if (currentPhraseList) {
+  currentPhraseList.addEventListener("click", (event) => {
+    const copyBtn = event.target.closest("[data-copy-phrase]");
+    if (copyBtn) {
+      const phraseId = copyBtn.dataset.copyPhrase;
+      const sourceSectionId = copyBtn.dataset.section;
+      const sourceSection = state.sections.find(s => s.id === sourceSectionId);
+      if (!sourceSection) return;
+      const sourcePhrase = sourceSection.phrases?.find(p => p.id === phraseId);
+      if (!sourcePhrase) return;
+      
+      const targetSection = getCurrentSection();
+      if (!targetSection) return;
+      
+      const bpm = sourceSection.beatsPerMeasure || 4;
+      const start = sourcePhrase.startMeasure * bpm;
+      const end = (sourcePhrase.endMeasure + 1) * bpm;
+      const patternSlice = sourceSection.pattern.map(row => row.slice(start, end));
+      
+      const libItem = {
+        name: sourcePhrase.name + " (副本)",
+        type: sourcePhrase.type,
+        color: sourcePhrase.color,
+        measureCount: sourcePhrase.endMeasure - sourcePhrase.startMeasure + 1,
+        beatsPerMeasure: bpm,
+        pattern: patternSlice,
+        note: sourcePhrase.note || "",
+        repeat: sourcePhrase.repeat || 1,
+        tempoMultiplier: sourcePhrase.tempoMultiplier || 1
+      };
+      
+      const mc = targetSection.measureCount || 4;
+      let targetMeasure = 0;
+      if (targetSection.phrases?.length > 0) {
+        const lastPhrase = targetSection.phrases[targetSection.phrases.length - 1];
+        targetMeasure = lastPhrase.endMeasure + 1;
+      }
+      if (targetMeasure + libItem.measureCount > mc) {
+        targetMeasure = Math.max(0, mc - libItem.measureCount);
+      }
+      
+      insertPhraseFromLibrary(libItem, targetMeasure);
+      closePhraseLibrary();
+    }
+  });
+}
 
 continuousPlayCheckbox.addEventListener("change", () => {
   if (tempoTrainer.active) {

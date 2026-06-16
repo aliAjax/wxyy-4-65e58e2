@@ -21,6 +21,7 @@
           <span>连续播放</span>
         </label>
         <button id="saveBtn" type="button">保存方案</button>
+        <button id="structuralModeBtn" type="button" class="structural-mode-btn">🧱 结构化编排</button>
         <button id="diagnosisToggleBtn" type="button" class="diagnosis-mode-btn">🎯 错拍诊断</button>
         <button id="rehearsalReviewBtn" type="button" class="review-mode-btn">📼 排练复盘</button>
       </div>
@@ -644,8 +645,61 @@
         <div id="grid" class="grid"></div>
       </section>
       <aside class="notes">
-        <h2>段落结构</h2>
-        <div id="structure"></div>
+        <div class="phrase-panel" id="phrasePanel">
+          <div class="phrase-panel-header">
+            <h2>段落结构</h2>
+            <div class="phrase-panel-actions">
+              <button type="button" id="addPhraseBtn" class="phrase-add-btn" title="添加乐句块">+ 乐句块</button>
+              <button type="button" id="phraseLibraryBtn" class="phrase-library-btn" title="乐句库">📚 乐句库</button>
+            </div>
+          </div>
+          <div class="phrase-list" id="phraseList"></div>
+          <div class="phrase-edit-panel" id="phraseEditPanel" style="display: none;">
+            <div class="phrase-edit-header">
+              <h3>编辑乐句块</h3>
+              <button type="button" class="phrase-edit-close" id="phraseEditCloseBtn">✕</button>
+            </div>
+            <div class="phrase-edit-body">
+              <div class="phrase-edit-field">
+                <label>名称：</label>
+                <input type="text" id="phraseNameInput" placeholder="乐句块名称">
+              </div>
+              <div class="phrase-edit-field">
+                <label>类型：</label>
+                <select id="phraseTypeSelect"></select>
+              </div>
+              <div class="phrase-edit-row">
+                <div class="phrase-edit-field">
+                  <label>起始小节：</label>
+                  <input type="number" id="phraseStartMeasure" min="1" value="1">
+                </div>
+                <div class="phrase-edit-field">
+                  <label>结束小节：</label>
+                  <input type="number" id="phraseEndMeasure" min="1" value="1">
+                </div>
+              </div>
+              <div class="phrase-edit-row">
+                <div class="phrase-edit-field">
+                  <label>重复次数：</label>
+                  <input type="number" id="phraseRepeat" min="1" max="16" value="1">
+                </div>
+                <div class="phrase-edit-field">
+                  <label>速度倍率：</label>
+                  <input type="number" id="phraseTempo" min="0.25" max="4" step="0.25" value="1">
+                </div>
+              </div>
+              <div class="phrase-edit-field">
+                <label>备注：</label>
+                <textarea id="phraseNote" rows="2" placeholder="添加备注说明..."></textarea>
+              </div>
+              <div class="phrase-edit-actions">
+                <button type="button" class="phrase-save-btn" id="phraseSaveBtn">✓ 保存</button>
+                <button type="button" class="phrase-duplicate-btn" id="phraseDuplicateBtn">⎘ 复制</button>
+                <button type="button" class="phrase-delete-btn" id="phraseDeleteBtn">🗑️ 删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
 
         <div class="collab-notes">
           <div class="collab-notes-header">
@@ -791,6 +845,43 @@
         <button type="button" class="vc-restore-selected-btn" id="vcRestoreSelectedBtn" disabled>↺ 恢复选中项</button>
         <button type="button" class="vc-restore-all-btn" id="vcRestoreAllBtn">🔄 整份覆盖恢复</button>
         <button type="button" class="vc-cancel-btn" id="vcCancelBtn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="phrase-library-overlay" id="phraseLibraryOverlay" style="display:none;">
+    <div class="phrase-library-modal">
+      <div class="phrase-library-header">
+        <div>
+          <h2>📚 乐句库</h2>
+          <p class="phrase-library-subtitle">管理和复用乐句块模板，支持跨段落调用</p>
+        </div>
+        <button type="button" class="phrase-library-close-btn" id="phraseLibraryCloseBtn">✕</button>
+      </div>
+      <div class="phrase-library-tabs">
+        <button type="button" class="phrase-library-tab active" data-phrase-tab="preset">🎵 预设乐句</button>
+        <button type="button" class="phrase-library-tab" data-phrase-tab="custom">💾 我的乐句</button>
+        <button type="button" class="phrase-library-tab" data-phrase-tab="current">📄 当前方案</button>
+      </div>
+      <div class="phrase-library-body">
+        <div class="phrase-library-tab-content active" data-phrase-library-tab="preset">
+          <div class="phrase-library-list" id="presetPhraseList"></div>
+        </div>
+        <div class="phrase-library-tab-content" data-phrase-library-tab="custom">
+          <div class="phrase-library-list" id="customPhraseList"></div>
+          <div class="phrase-library-empty" id="customPhraseEmpty">暂无自定义乐句，点击乐句块的「存为模板」可添加</div>
+        </div>
+        <div class="phrase-library-tab-content" data-phrase-library-tab="current">
+          <div class="phrase-library-section-selector">
+            <label>选择段落：</label>
+            <select id="phraseLibrarySectionSelect"></select>
+          </div>
+          <div class="phrase-library-list" id="currentPhraseList"></div>
+        </div>
+      </div>
+      <div class="phrase-library-footer">
+        <span class="phrase-library-hint">💡 点击「插入」可将乐句块添加到当前段落</span>
+        <button type="button" class="phrase-library-cancel-btn" id="phraseLibraryCancelBtn">关闭</button>
       </div>
     </div>
   </div>
