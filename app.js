@@ -103,6 +103,24 @@ function deepCloneSections(sections) {
   return sections.map(deepCloneSection);
 }
 
+function deepCloneBaseSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.sections)) {
+    return null;
+  }
+  return {
+    versionId: snapshot.versionId || null,
+    schemeId: snapshot.schemeId || null,
+    pieceName: snapshot.pieceName || "",
+    sections: deepCloneSections(snapshot.sections),
+    currentSectionId: snapshot.currentSectionId || null,
+    continuousPlay: snapshot.continuousPlay ?? false,
+    rehearsalLog: Array.isArray(snapshot.rehearsalLog)
+      ? snapshot.rehearsalLog.map((entry) => ({ ...entry }))
+      : [],
+    snapshotAt: snapshot.snapshotAt || null
+  };
+}
+
 function deepCloneSavedItem(item) {
   if (!item) return null;
   return {
@@ -188,7 +206,8 @@ const defaultState = {
   recentPlayedSection: "",
   schemeId: null,
   versionId: null,
-  parentVersionId: null
+  parentVersionId: null,
+  baseSnapshot: null
 };
 
 function parseMeasureFromNote(content) {
@@ -307,7 +326,11 @@ function migrateOldFormat(oldState) {
       saved,
       playCount: oldState.playCount || 0,
       lastPlayedAt: oldState.lastPlayedAt || null,
-      recentPlayedSection: oldState.recentPlayedSection || ""
+      recentPlayedSection: oldState.recentPlayedSection || "",
+      schemeId: oldState.schemeId || null,
+      versionId: oldState.versionId || null,
+      parentVersionId: oldState.parentVersionId || null,
+      baseSnapshot: deepCloneBaseSnapshot(oldState.baseSnapshot)
     };
   } else {
     const section = ensureSectionDefaults({
@@ -346,7 +369,11 @@ function migrateOldFormat(oldState) {
       saved,
       playCount: oldState.playCount || 0,
       lastPlayedAt: oldState.lastPlayedAt || null,
-      recentPlayedSection: oldState.recentPlayedSection || ""
+      recentPlayedSection: oldState.recentPlayedSection || "",
+      schemeId: oldState.schemeId || null,
+      versionId: oldState.versionId || null,
+      parentVersionId: oldState.parentVersionId || null,
+      baseSnapshot: deepCloneBaseSnapshot(oldState.baseSnapshot)
     };
   }
   migrateAllSectionsToCollabNotes(result);
@@ -442,7 +469,11 @@ if (storedState) {
     saved: deepCloneSavedList(migrated.saved),
     playCount: migrated.playCount,
     lastPlayedAt: migrated.lastPlayedAt,
-    recentPlayedSection: migrated.recentPlayedSection
+    recentPlayedSection: migrated.recentPlayedSection,
+    schemeId: migrated.schemeId || null,
+    versionId: migrated.versionId || null,
+    parentVersionId: migrated.parentVersionId || null,
+    baseSnapshot: deepCloneBaseSnapshot(migrated.baseSnapshot)
   };
   if (!state.currentSectionId && state.sections.length > 0) {
     state.currentSectionId = state.sections[0].id;
@@ -456,7 +487,11 @@ if (storedState) {
     saved: [],
     playCount: 0,
     lastPlayedAt: null,
-    recentPlayedSection: ""
+    recentPlayedSection: "",
+    schemeId: defaultState.schemeId,
+    versionId: defaultState.versionId,
+    parentVersionId: defaultState.parentVersionId,
+    baseSnapshot: defaultState.baseSnapshot
   };
   state.currentSectionId = state.sections[0].id;
 }
@@ -3055,35 +3090,42 @@ function ensureSchemeIds() {
   }
 }
 
+function createCurrentBaseSnapshot(versionId) {
+  return {
+    versionId,
+    schemeId: state.schemeId,
+    pieceName: state.pieceName,
+    sections: deepCloneSections(state.sections),
+    currentSectionId: state.currentSectionId,
+    continuousPlay: state.continuousPlay,
+    rehearsalLog: Array.isArray(rehearsalLog)
+      ? rehearsalLog.map((entry) => ({ ...entry }))
+      : [],
+    snapshotAt: new Date().toISOString()
+  };
+}
+
 function buildExportData() {
   ensureSchemeIds();
 
   const currentVersionId = state.versionId;
   const newVersionId = crypto.randomUUID();
-
-  const snapshotSections = deepCloneSections(state.sections);
+  const baseSnapshot = deepCloneBaseSnapshot(state.baseSnapshot)
+    || createCurrentBaseSnapshot(currentVersionId);
 
   const exportData = {
     schemaVersion: SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
     schemeId: state.schemeId,
     versionId: newVersionId,
-    parentVersionId: state.versionId,
+    parentVersionId: currentVersionId,
     pieceName: state.pieceName,
     sections: deepCloneSections(state.sections),
     currentSectionId: state.currentSectionId,
     continuousPlay: state.continuousPlay,
     saved: deepCloneSavedList(state.saved),
     rehearsalLog: JSON.parse(JSON.stringify(rehearsalLog || [])),
-    baseSnapshot: {
-      versionId: currentVersionId,
-      schemeId: state.schemeId,
-      pieceName: state.pieceName,
-      sections: snapshotSections,
-      currentSectionId: state.currentSectionId,
-      continuousPlay: state.continuousPlay,
-      snapshotAt: new Date().toISOString()
-    },
+    baseSnapshot,
     appInfo: {
       name: "传统戏曲锣鼓经排练可视化",
       version: "1.0.0",
@@ -3091,7 +3133,9 @@ function buildExportData() {
     }
   };
 
+  state.baseSnapshot = deepCloneBaseSnapshot(baseSnapshot);
   state.versionId = newVersionId;
+  state.parentVersionId = currentVersionId;
   save();
 
   return exportData;
@@ -3523,7 +3567,7 @@ function applySchemeImport() {
         state.schemeId = parsedSchemeData.schemeId || crypto.randomUUID();
         state.versionId = parsedSchemeData.versionId || crypto.randomUUID();
         state.parentVersionId = parsedSchemeData.parentVersionId || null;
-        state.baseSnapshot = parsedSchemeData.baseSnapshot || null;
+        state.baseSnapshot = deepCloneBaseSnapshot(parsedSchemeData.baseSnapshot);
 
         state.sections.forEach(section => {
           migrateNotesToCollabNotes(section);
@@ -7523,13 +7567,21 @@ function autoMerge() {
 
   mergedRehearsalLog.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
+  const mergedBaseSnapshot = deepCloneBaseSnapshot(mergeState.baseData)
+    || deepCloneBaseSnapshot(state.baseSnapshot)
+    || deepCloneBaseSnapshot(mergeState.collabData.baseSnapshot);
+
   mergeState.mergedData = {
     ...state,
     pieceName: mergeState.collabData.pieceName || state.pieceName,
     sections: orderedMergedSections,
     continuousPlay: state.continuousPlay,
     currentSectionId: state.currentSectionId || orderedMergedSections[0]?.id,
-    saved: state.saved
+    saved: state.saved,
+    schemeId: state.schemeId,
+    versionId: crypto.randomUUID(),
+    parentVersionId: state.versionId,
+    baseSnapshot: mergedBaseSnapshot
   };
   mergeState.mergedRehearsalLog = mergedRehearsalLog;
   mergeState.autoMerged = true;
@@ -7794,6 +7846,10 @@ function autoMergeThreeWay() {
     mergedPieceName = theirPieceName;
   }
 
+  const mergedBaseSnapshot = deepCloneBaseSnapshot(mergeState.baseData)
+    || deepCloneBaseSnapshot(state.baseSnapshot)
+    || deepCloneBaseSnapshot(mergeState.collabData.baseSnapshot);
+
   mergeState.mergedData = {
     ...state,
     pieceName: mergedPieceName,
@@ -7804,7 +7860,7 @@ function autoMergeThreeWay() {
     schemeId: state.schemeId,
     versionId: crypto.randomUUID(),
     parentVersionId: state.versionId,
-    baseSnapshot: null
+    baseSnapshot: mergedBaseSnapshot
   };
   mergeState.mergedRehearsalLog = mergedRehearsalLog;
   mergeState.autoMerged = true;
@@ -7879,6 +7935,10 @@ function applyMergeResult() {
   state.sections = deepCloneSections(mergeState.mergedData.sections);
   state.currentSectionId = mergeState.mergedData.currentSectionId;
   state.continuousPlay = mergeState.mergedData.continuousPlay;
+  state.schemeId = mergeState.mergedData.schemeId || state.schemeId;
+  state.versionId = mergeState.mergedData.versionId || state.versionId;
+  state.parentVersionId = mergeState.mergedData.parentVersionId || state.parentVersionId;
+  state.baseSnapshot = deepCloneBaseSnapshot(mergeState.mergedData.baseSnapshot);
 
   rehearsalLog = [...mergeState.mergedRehearsalLog];
   saveRehearsalLog();
@@ -7895,15 +7955,20 @@ function exportMergeResult() {
     const exportData = {
       schemaVersion: SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
+      schemeId: mergeState.mergedData.schemeId || state.schemeId,
+      versionId: mergeState.mergedData.versionId || crypto.randomUUID(),
+      parentVersionId: mergeState.mergedData.parentVersionId || state.versionId || null,
       pieceName: mergeState.mergedData.pieceName,
       sections: deepCloneSections(mergeState.mergedData.sections),
       currentSectionId: mergeState.mergedData.currentSectionId,
       continuousPlay: mergeState.mergedData.continuousPlay,
       saved: deepCloneSavedList(mergeState.mergedData.saved || []),
       rehearsalLog: mergeState.mergedRehearsalLog,
+      baseSnapshot: deepCloneBaseSnapshot(mergeState.mergedData.baseSnapshot),
       appInfo: {
         name: "传统戏曲锣鼓经排练可视化",
         version: "1.0.0",
+        feature: "3-way-merge",
         note: "协作合并结果"
       }
     };
