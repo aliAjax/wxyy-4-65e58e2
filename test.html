@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>口令转网格 · 单元测试</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 24px;
+    }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: #94a3b8; font-size: 13px; margin-bottom: 16px; }
+    .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+    button {
+      background: #2563eb; color: #fff; border: none; border-radius: 8px;
+      padding: 8px 14px; font-size: 14px; cursor: pointer;
+    }
+    button:hover { background: #1d4ed8; }
+    #summary {
+      font-size: 15px; font-weight: 600; padding: 12px 16px; border-radius: 10px;
+      background: #1e293b; margin-bottom: 12px;
+    }
+    #summary.ok { color: #34d399; }
+    #summary.fail { color: #f87171; }
+    #summary.run { color: #fbbf24; }
+    .suite {
+      background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+      margin-bottom: 12px; overflow: hidden;
+    }
+    .suite-head { padding: 10px 14px; background: #111827; font-weight: 600; font-size: 14px; }
+    .case {
+      display: flex; gap: 10px; align-items: flex-start;
+      padding: 8px 14px; border-top: 1px solid #243042; font-size: 13px;
+    }
+    .case .badge { flex: 0 0 54px; font-weight: 700; text-align: center; border-radius: 4px; padding: 1px 0; }
+    .case .badge.pass { background: #064e3b; color: #34d399; }
+    .case .badge.fail { background: #7f1d1d; color: #f87171; }
+    .case .name { flex: 1; }
+    .case .err { color: #fca5a5; margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
+    #guidance {
+      display: none; background: #422006; border: 1px solid #b45309; color: #fde68a;
+      padding: 14px 16px; border-radius: 10px; margin-bottom: 16px; font-size: 13px; line-height: 1.7;
+    }
+    #guidance code { background: #111827; padding: 1px 6px; border-radius: 4px; color: #fbbf24; }
+    #appFrame { position: absolute; left: -99999px; top: 0; width: 1px; height: 1px; border: 0; }
+  </style>
+</head>
+<body>
+  <h1>口令输入转网格 · 单元测试</h1>
+  <p class="sub">通过隐藏 iframe 加载真实 index.html，直接调用 app.js 中的
+    <code>parseSinglePattern</code> / <code>parseSectionHeader</code> / <code>parseCommand</code> / <code>applyParsedPattern</code>，不重写任何业务逻辑。</p>
+
+  <div class="toolbar">
+    <button id="runBtn">▶ 重新运行</button>
+    <span class="sub" id="stateLabel">待运行</span>
+  </div>
+
+  <div id="guidance">
+    无法访问 iframe 内部应用（跨源限制）。本项目需通过本地 HTTP 服务器运行测试，请在项目目录下执行：<br>
+    <code>python3 -m http.server 8765</code><br>
+    然后用浏览器打开 <code>http://localhost:8765/test.html</code>。
+  </div>
+
+  <div id="summary">—</div>
+  <div id="results"></div>
+
+  <iframe id="appFrame" src="./index.html" title="被测应用"></iframe>
+
+  <script>
+    "use strict";
+    const frame = document.getElementById("appFrame");
+    const runBtn = document.getElementById("runBtn");
+    const summaryEl = document.getElementById("summary");
+    const resultsEl = document.getElementById("results");
+    const stateLabel = document.getElementById("stateLabel");
+    const guidanceEl = document.getElementById("guidance");
+
+    // ---------- 极简断言框架 ----------
+    const suites = [];
+    let passed = 0, failed = 0;
+    const records = [];
+
+    function assert(cond, msg) {
+      if (!cond) throw new Error(msg || "断言失败");
+    }
+    function assertEqual(actual, expected, msg) {
+      const a = JSON.stringify(actual), e = JSON.stringify(expected);
+      if (a !== e) throw new Error((msg || "断言失败") + `（期望 ${e}，实际 ${a}）`);
+    }
+    function assertThrows(fn, msg) {
+      let threw = false;
+      try { fn(); } catch (e) { threw = true; }
+      if (!threw) throw new Error(msg || "期望抛出异常但未抛出");
+    }
+    function suite(name, fn) { suites.push({ name, fn }); }
+    function test(name, fn) {
+      try { fn(); passed++; records.push({ suite: suiteName, name, ok: true }); }
+      catch (e) { failed++; records.push({ suite: suiteName, name, ok: false, err: e.message }); }
+    }
+    let suiteName = "";
+
+    // ========== 用例定义 ==========
+    suite("parseSinglePattern · 别名归一化", () => {
+      test("别名 匡/咚/七/令 映射到 规范字 仓/冬/才/台", () => {
+        const r = T.parseSinglePattern("匡 咚 七 令");
+        assertEqual(r.pattern[0][0], "仓");
+        assertEqual(r.pattern[1][1], "冬");
+        assertEqual(r.pattern[2][2], "才");
+        assertEqual(r.pattern[3][3], "台");
+      });
+      test("aliasConversions 记录 4 条转换及乐器名", () => {
+        const r = T.parseSinglePattern("匡 咚 七 令");
+        assertEqual(r.aliasConversions.length, 4);
+        assert(r.aliasConversions.some(a => a.from === "匡" && a.to === "仓" && a.instrument === "大锣"));
+        assert(r.aliasConversions.some(a => a.from === "令" && a.to === "台" && a.instrument === "小锣"));
+      });
+      test("更多别名：哐/铛→仓，大→冬，呛/镲→才，另/当/来→台", () => {
+        const r = T.parseSinglePattern("哐 铛 大 呛 || 镲 另 当 来");
+        assertEqual(r.pattern[0][0], "仓");
+        assertEqual(r.pattern[0][1], "仓");
+        assertEqual(r.pattern[1][2], "冬");
+        assertEqual(r.pattern[2][3], "才");
+        assertEqual(r.pattern[2][4], "才");
+        assertEqual(r.pattern[3][5], "台");
+        assertEqual(r.pattern[3][6], "台");
+        assertEqual(r.pattern[3][7], "台");
+      });
+    });
+
+    suite("parseSinglePattern · 一拍多字连写", () => {
+      test("「匡令」同时击打大锣与小锣", () => {
+        const r = T.parseSinglePattern("匡令 0 0 0");
+        assertEqual(r.pattern[0][0], "仓");
+        assertEqual(r.pattern[3][0], "台");
+      });
+      test("「台台」重复定义仅保留一个并告警", () => {
+        const r = T.parseSinglePattern("台台 0 0 0");
+        assertEqual(r.pattern[3][0], "台");
+        assert(r.warnings.length >= 1, "应产生重复定义告警");
+        assert(r.warnings[0].includes("重复定义"), "告警信息应包含『重复定义』");
+      });
+      test("「仓冬才台」四乐器合奏", () => {
+        const r = T.parseSinglePattern("仓冬才台 0 0 0");
+        assertEqual(r.pattern[0][0], "仓");
+        assertEqual(r.pattern[1][0], "冬");
+        assertEqual(r.pattern[2][0], "才");
+        assertEqual(r.pattern[3][0], "台");
+      });
+      test("aliasConversions 对连写中的每个别名都记录", () => {
+        const r = T.parseSinglePattern("匡令 0 0 0");
+        assert(r.aliasConversions.some(a => a.from === "匡" && a.to === "仓"));
+        assert(r.aliasConversions.some(a => a.from === "令" && a.to === "台"));
+      });
+    });
+
+    suite("parseSinglePattern · 休止符", () => {
+      test("0/乙/×/空 全部视为休止（对应拍位为空）", () => {
+        const r = T.parseSinglePattern("0 乙 × 空");
+        for (let row = 0; row < 4; row++) {
+          for (let col = 0; col < 4; col++) {
+            assertEqual(r.pattern[row][col], "", `第 ${row} 行第 ${col} 列应为空`);
+          }
+        }
+      });
+      test("混入休止符的拍位保持为空", () => {
+        const r = T.parseSinglePattern("仓 0 才 乙");
+        assertEqual(r.pattern[0][0], "仓");
+        assertEqual(r.pattern[2][2], "才");
+        assertEqual(r.pattern[0][1], "");
+        assertEqual(r.pattern[2][3], "");
+      });
+      test("·/冷/一/〇 同样视为休止", () => {
+        const r = T.parseSinglePattern("· 冷 一 〇");
+        for (let row = 0; row < 4; row++) {
+          for (let col = 0; col < 4; col++) {
+            assertEqual(r.pattern[row][col], "");
+          }
+        }
+      });
+      test("空字符串或纯空格输入返回 null", () => {
+        assertEqual(T.parseSinglePattern(""), null);
+        assertEqual(T.parseSinglePattern("   "), null);
+      });
+    });
+
+    suite("parseSinglePattern · 多小节与边界", () => {
+      test("|| 分隔小节，共 2 小节 8 拍", () => {
+        const r = T.parseSinglePattern("仓 才 仓 才 || 冬 台 冬 台");
+        assertEqual(r.measureCount, 2);
+        assertEqual(r.pattern[0][0], "仓");
+        assertEqual(r.pattern[0][4], "");
+        assertEqual(r.pattern[1][4], "冬");
+        assertEqual(r.pattern[3][5], "台");
+      });
+      test("最多 4 小节（16 拍）", () => {
+        const r = T.parseSinglePattern("0 0 0 0 || 0 0 0 0 || 0 0 0 0 || 0 0 0 0");
+        assertEqual(r.measureCount, 4);
+      });
+      test("单竖线 | 也可分隔拍", () => {
+        const r = T.parseSinglePattern("仓|才|仓|才");
+        assertEqual(r.pattern[0][0], "仓");
+        assertEqual(r.pattern[2][1], "才");
+      });
+    });
+
+    suite("parseSinglePattern · 错误处理", () => {
+      test("小节拍数不匹配抛出异常", () => {
+        assertThrows(() => T.parseSinglePattern("仓 才 仓"));
+      });
+      test("超出最大小节数（>4）抛出异常", () => {
+        assertThrows(() => T.parseSinglePattern("0 0 0 0 || 0 0 0 0 || 0 0 0 0 || 0 0 0 0 || 0 0 0 0"));
+      });
+      test("无法识别的字符抛出异常", () => {
+        assertThrows(() => T.parseSinglePattern("仓 X 才 0"));
+      });
+      test("异常信息包含小节位置信息", () => {
+        try {
+          T.parseSinglePattern("仓 才 仓");
+          assert(false, "应抛出异常");
+        } catch (e) {
+          assert(e.message.includes("第 1 小节"), "异常应包含『第 1 小节』");
+        }
+      });
+    });
+
+    suite("parseSectionHeader · BPM 与小节范围", () => {
+      test("冒号+BPM+方括号：提取名称/BPM/范围", () => {
+        const h = T.parseSectionHeader("# 慢板: 120 BPM [1-4小节]");
+        assertEqual(h.name, "慢板");
+        assertEqual(h.bpm, 120);
+        assertEqual(h.measureRange, { start: 1, end: 4 });
+      });
+      test("无 BPM 时默认 96 且无小节范围", () => {
+        const h = T.parseSectionHeader("## 引子");
+        assertEqual(h.bpm, 96);
+        assertEqual(h.measureRange, null);
+        assertEqual(h.name, "引子");
+      });
+      test("BPM 越界自动钳制（<40→40，>220→220）", () => {
+        assertEqual(T.parseSectionHeader("# 慢: 30 BPM").bpm, 40);
+        assertEqual(T.parseSectionHeader("# 快: 300 BPM").bpm, 220);
+      });
+      test("全角【】括号的小节范围可解析", () => {
+        const h = T.parseSectionHeader("# 段: 100 【2-5小节】");
+        assertEqual(h.measureRange, { start: 2, end: 5 });
+      });
+      test("=== 和 --- 开头也视为段落标题", () => {
+        const h1 = T.parseSectionHeader("=== 开场锣鼓 ===");
+        assertEqual(h1.name, "开场锣鼓");
+        const h2 = T.parseSectionHeader("--- 过门 ---");
+        assertEqual(h2.name, "过门");
+      });
+      test("小节范围不带『小节』二字也可解析", () => {
+        const h = T.parseSectionHeader("# 段: 100 BPM [3-6]");
+        assertEqual(h.measureRange, { start: 3, end: 6 });
+      });
+      test("非标题行返回 null", () => {
+        assertEqual(T.parseSectionHeader("仓 才 仓 才"), null);
+        assertEqual(T.parseSectionHeader(""), null);
+      });
+      test("### 三级标题也可解析", () => {
+        const h = T.parseSectionHeader("### 小过门: 110 BPM");
+        assertEqual(h.name, "小过门");
+        assertEqual(h.bpm, 110);
+      });
+    });
+
+    suite("parseCommand · 单段落与多段落", () => {
+      test("单段落（无标题）：isMultiSection=false，使用默认 BPM", () => {
+        const r = T.parseCommand("仓 才 仓 才 || 0 0 0 0");
+        assertEqual(r.isMultiSection, false);
+        assertEqual(r.sections.length, 1);
+        assertEqual(r.sections[0].measureCount, 2);
+        assertEqual(r.sections[0].pattern[0][0], "仓");
+      });
+      test("多段落：解析各段 BPM 与显式小节范围", () => {
+        const input =
+          "# 慢板: 120 BPM [1-4小节]\n仓 才 仓 才 || 0 0 0 0\n" +
+          "# 快板: 140 [5-8小节]\n冬 冬 台 台 || 才 才 才 才";
+        const r = T.parseCommand(input);
+        assertEqual(r.isMultiSection, true);
+        assertEqual(r.sections.length, 2);
+        assertEqual(r.sections[0].name, "慢板");
+        assertEqual(r.sections[0].bpm, 120);
+        assertEqual(r.sections[0].measureRange, { start: 1, end: 4 });
+        assertEqual(r.sections[1].name, "快板");
+        assertEqual(r.sections[1].bpm, 140);
+        assertEqual(r.sections[1].measureRange, { start: 5, end: 8 });
+      });
+      test("多段落：省略小节范围时自动累加计算", () => {
+        const input =
+          "# 引子: 100 BPM\n仓 才 仓 才\n" +
+          "# 主体: 110 BPM\n冬 冬 台 台 || 才 才 才 才";
+        const r = T.parseCommand(input);
+        assertEqual(r.sections[0].measureRange, { start: 1, end: 1 });
+        assertEqual(r.sections[1].measureRange, { start: 2, end: 3 });
+      });
+      test("多段落：子段解析失败抛出带段落名的异常", () => {
+        try {
+          T.parseCommand("# 段A: 100 BPM\n仓 才 仓");
+          assert(false, "应抛出异常");
+        } catch (e) {
+          assert(e.message.includes("段A"), "异常应包含段落名");
+        }
+      });
+      test("空输入抛出异常", () => {
+        assertThrows(() => T.parseCommand(""));
+      });
+      test("只有标题没有内容也会抛出异常", () => {
+        assertThrows(() => T.parseCommand("# 空段落: 100 BPM"));
+      });
+    });
+
+    suite("applyParsedPattern · merge 模式不覆盖已有谱面", () => {
+      function makeFixture() {
+        const sec = T.createEmptySection("测试段");
+        sec.bpm = 100;
+        sec.pattern[0][0] = "仓";
+        sec.pattern[1][2] = "冬";
+        return sec;
+      }
+      function buildParsed(patternStr) {
+        const p = T.parseSinglePattern(patternStr);
+        return {
+          isMultiSection: false,
+          sections: [{
+            name: "测试段", bpm: 100, measureRange: null,
+            measureCount: p.measureCount,
+            pattern: p.pattern, warnings: p.warnings, aliasConversions: p.aliasConversions
+          }]
+        };
+      }
+      function runApply() {
+        try { T.applyParsedPattern(); } catch (e) { /* 忽略 DOM 操作错误 */ }
+      }
+      test("merge 模式：休止位置保留已有内容，空位被填入", () => {
+        const sec = makeFixture();
+        T.state = deepCloneState(baseState);
+        T.state.sections = [sec];
+        T.state.currentSectionId = sec.id;
+        T.parsedPattern = buildParsed("0 才 0 0");
+        T.parsedWriteMode = "merge";
+        runApply();
+        const s = T.state.sections[0];
+        assertEqual(s.pattern[0][0], "仓", "休止位置已有 仓 应被保留");
+        assertEqual(s.pattern[1][2], "冬", "休止位置已有 冬 应被保留");
+        assertEqual(s.pattern[2][1], "才", "空位应被填入 才");
+      });
+      test("merge 模式：已有内容的拍位不会被新口令覆盖", () => {
+        const sec = makeFixture();
+        T.state = deepCloneState(baseState);
+        T.state.sections = [sec];
+        T.state.currentSectionId = sec.id;
+        T.parsedPattern = buildParsed("冬 才 仓 台");
+        T.parsedWriteMode = "merge";
+        runApply();
+        const s = T.state.sections[0];
+        assertEqual(s.pattern[0][0], "仓", "已有 仓 应保留，不应被覆盖");
+        assertEqual(s.pattern[1][2], "冬", "已有 冬 应保留");
+        assertEqual(s.pattern[2][1], "才", "新口令写入空位");
+      });
+      test("overwrite 模式：休止位置会清空已有内容（对照证明 merge 的语义）", () => {
+        const sec = makeFixture();
+        T.state = deepCloneState(baseState);
+        T.state.sections = [sec];
+        T.state.currentSectionId = sec.id;
+        T.parsedPattern = buildParsed("0 才 0 0");
+        T.parsedWriteMode = "overwrite";
+        runApply();
+        const s = T.state.sections[0];
+        assertEqual(s.pattern[0][0], "", "覆盖模式应清空已有 仓");
+        assertEqual(s.pattern[1][2], "", "覆盖模式应清空已有 冬");
+        assertEqual(s.pattern[2][1], "才", "非休止仍写入 才");
+      });
+      test("append 模式：不改动当前段落，追加新段落", () => {
+        const sec = makeFixture();
+        const origId = sec.id;
+        T.state = deepCloneState(baseState);
+        T.state.sections = [sec];
+        T.state.currentSectionId = sec.id;
+        T.parsedPattern = buildParsed("台 台 台 台");
+        T.parsedWriteMode = "append";
+        runApply();
+        assertEqual(T.state.sections.length, 2, "应追加为 2 个段落");
+        assertEqual(T.state.sections[0].id, origId, "原有段落 ID 不变");
+        assertEqual(T.state.sections[0].pattern[0][0], "仓", "原有内容不变");
+        assertEqual(T.state.sections[1].pattern[3][0], "台", "新段落内容正确");
+      });
+    });
+
+    // ---------- 运行控制 ----------
+    let T = null;
+    let baseState = null;
+    let lsBackup = null;
+
+    function deepCloneState(s) {
+      return JSON.parse(JSON.stringify(s));
+    }
+
+    function snapshot(W) {
+      baseState = deepCloneState(T.state);
+      lsBackup = {};
+      for (let i = 0; i < W.localStorage.length; i++) {
+        const k = W.localStorage.key(i);
+        lsBackup[k] = W.localStorage.getItem(k);
+      }
+    }
+    function restore(W) {
+      try {
+        T.state = JSON.parse(JSON.stringify(baseState));
+        if (typeof W.save === "function") W.save();
+      } catch (e) { /* ignore */ }
+      try {
+        W.localStorage.clear();
+        for (const k in lsBackup) {
+          if (lsBackup[k] !== null) W.localStorage.setItem(k, lsBackup[k]);
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    function renderResults() {
+      summaryEl.className = failed === 0 ? "ok" : "fail";
+      summaryEl.textContent = failed === 0
+        ? `✓ 全部通过：${passed} 项`
+        : `✗ 失败 ${failed} 项 / 通过 ${passed} 项`;
+      stateLabel.textContent = failed === 0 ? "通过" : "存在失败";
+      const bySuite = {};
+      for (const r of records) {
+        (bySuite[r.suite] = bySuite[r.suite] || []).push(r);
+      }
+      let html = "";
+      for (const name of Object.keys(bySuite)) {
+        const cases = bySuite[name];
+        const fail = cases.some(c => !c.ok);
+        html += `<div class="suite"><div class="suite-head">${fail ? "❌" : "✅"} ${name}</div>`;
+        for (const c of cases) {
+          html += `<div class="case"><span class="badge ${c.ok ? "pass" : "fail"}">${c.ok ? "PASS" : "FAIL"}</span>`;
+          html += `<div class="name">${c.name}${c.ok ? "" : `<div class="err">${escapeHtml(c.err)}</div>`}</div></div>`;
+        }
+        html += `</div>`;
+      }
+      resultsEl.innerHTML = html;
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[ch]));
+    }
+
+    function runTests() {
+      const W = frame.contentWindow;
+      guidanceEl.style.display = "none";
+      let hook = null;
+      try { hook = W && W.__luoguTest; } catch (e) { hook = null; }
+      if (!hook) {
+        summaryEl.className = "fail";
+        summaryEl.textContent = "✗ 无法访问被测应用";
+        resultsEl.innerHTML = "";
+        guidanceEl.style.display = "block";
+        stateLabel.textContent = "需要本地服务器";
+        return;
+      }
+      T = hook;
+      passed = 0; failed = 0; records.length = 0;
+      summaryEl.className = "run";
+      summaryEl.textContent = "运行中…";
+      stateLabel.textContent = "运行中";
+
+      snapshot(W);
+
+      const origRender = W.render;
+      const origSave = W.save;
+      const origResetImportState = W.resetImportState;
+      let importSummaryEl = W.document.querySelector("#importSummary");
+      let commandInputEl = W.document.querySelector("#commandInput");
+
+      function setupMocks() {
+        W.render = () => {};
+        W.save = () => {};
+        W.resetImportState = () => {};
+        if (!importSummaryEl) {
+          importSummaryEl = W.document.createElement("div");
+          importSummaryEl.id = "importSummary";
+          W.document.body.appendChild(importSummaryEl);
+        }
+        if (!commandInputEl) {
+          commandInputEl = W.document.createElement("input");
+          commandInputEl.id = "commandInput";
+          W.document.body.appendChild(commandInputEl);
+        }
+        const structureEl = W.document.querySelector("#structure");
+        if (!structureEl) {
+          const s = W.document.createElement("div");
+          s.id = "structure";
+          W.document.body.appendChild(s);
+        }
+        const notesListEl = W.document.querySelector("#notesList");
+        if (!notesListEl) {
+          const n = W.document.createElement("div");
+          n.id = "notesList";
+          W.document.body.appendChild(n);
+        }
+        const savedListEl = W.document.querySelector("#savedList");
+        if (!savedListEl) {
+          const sv = W.document.createElement("div");
+          sv.id = "savedList";
+          W.document.body.appendChild(sv);
+        }
+      }
+      function teardownMocks() {
+        W.render = origRender;
+        W.save = origSave;
+        W.resetImportState = origResetImportState;
+      }
+
+      try {
+        for (const s of suites) {
+          suiteName = s.name;
+          if (s.name.startsWith("applyParsedPattern")) {
+            setupMocks();
+          }
+          try {
+            s.fn();
+          } finally {
+            if (s.name.startsWith("applyParsedPattern")) {
+              teardownMocks();
+            }
+          }
+        }
+      } finally {
+        restore(W);
+      }
+      renderResults();
+    }
+
+    frame.addEventListener("load", runTests);
+    runBtn.addEventListener("click", () => {
+      // 重新触发一次运行（iframe 已加载，直接重跑）
+      runTests();
+    });
+  </script>
+</body>
+</html>
