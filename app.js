@@ -962,9 +962,11 @@ function renderSidebars() {
     const count = section.pattern.flatMap((row) => row.slice(start, start + 4)).filter(Boolean).length;
     return { measure: measure + 1, count };
   });
-  structure.innerHTML = filledByMeasure.map((item) => `
+  if (structure) {
+    structure.innerHTML = filledByMeasure.map((item) => `
     <div class="structure-row"><span>第${item.measure}小节</span><strong>${item.count}个口令</strong></div>
   `).join("");
+  }
 
   if (notesList) {
     notesList.innerHTML = section.notes.length ? section.notes.map((note) => `
@@ -974,7 +976,8 @@ function renderSidebars() {
 
   renderCollabNotes();
 
-  savedList.innerHTML = state.saved.length ? state.saved.map((item) => {
+  if (savedList) {
+    savedList.innerHTML = state.saved.length ? state.saved.map((item) => {
     const sectionCount = item.sectionCount || (item.sections ? item.sections.length : 1);
     const bpm = item.bpm || (item.sections && item.sections[0]?.bpm) || 96;
     const dateStr = item.createdAt ? new Date(item.createdAt).toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
@@ -989,6 +992,7 @@ function renderSidebars() {
     </div>
   `;
   }).join("") : "<p>还没有保存方案。</p>";
+  }
 }
 
 function getMeasureData() {
