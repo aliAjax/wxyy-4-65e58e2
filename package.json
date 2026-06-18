@@ -1,0 +1,17 @@
+{
+  "name": "wxyy-4-luogujing",
+  "version": "1.0.0",
+  "private": true,
+  "description": "传统戏曲锣鼓经排练可视化",
+  "scripts": {
+    "serve": "npx http-server . -p 8765 -c-1 --silent",
+    "test": "npm run test:smoke",
+    "test:smoke": "npx playwright test --config playwright.config.js",
+    "test:smoke:headed": "npx playwright test --config playwright.config.js --headed",
+    "test:unit": "npx playwright test --config playwright.config.js tests/unit.spec.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "http-server": "^14.1.1"
+  }
+}
